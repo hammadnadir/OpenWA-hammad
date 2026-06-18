@@ -62,6 +62,7 @@ export class BaileysPlugin implements IEnginePlugin {
       'message-reactions',
       'message-deletion',
       'group-management',
+      'read-receipts',
     ];
   }
 

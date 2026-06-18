@@ -30,6 +30,8 @@ class FakeSock extends EventEmitter {
   public groupRevokeInvite = jest.fn();
   public profilePictureUrl = jest.fn();
   public updateBlockStatus = jest.fn().mockResolvedValue(undefined);
+  public readMessages = jest.fn().mockResolvedValue(undefined);
+  public chatModify = jest.fn().mockResolvedValue(undefined);
   fire(event: string, arg: unknown): void {
     this.emitter.emit(event, arg);
   }
@@ -160,15 +162,16 @@ describe('BaileysAdapter lifecycle & status', () => {
 });
 
 describe('BaileysAdapter capability gating', () => {
-  it('throws EngineNotSupportedError for store-backed methods (e.g. getChats)', async () => {
+  it('throws EngineNotSupportedError for still-gated methods (e.g. getChatHistory)', async () => {
     const adapter = newAdapter();
-    await expect(adapter.getChats()).rejects.toBeInstanceOf(EngineNotSupportedError);
+    await expect(adapter.getChatHistory('628111@s.whatsapp.net')).rejects.toBeInstanceOf(EngineNotSupportedError);
   });
 });
 
 describe('BaileysAdapter location + contact sends', () => {
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
     fakeSock.sendMessage.mockResolvedValue({ key: { id: 'M2' }, messageTimestamp: 1700000006 });
   });
@@ -220,6 +223,7 @@ describe('BaileysAdapter location + contact sends', () => {
 describe('BaileysAdapter messaging', () => {
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
   });
 
@@ -274,6 +278,7 @@ describe('BaileysAdapter inbound fan-out', () => {
 
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
     baileys.getContentType.mockReturnValue('conversation');
   });
@@ -343,6 +348,7 @@ describe('BaileysAdapter inbound fan-out', () => {
 describe('BaileysAdapter media sends', () => {
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
     fakeSock.sendMessage.mockResolvedValue({ key: { id: 'M1' }, messageTimestamp: 1700000005 });
   });
@@ -439,6 +445,7 @@ describe('BaileysAdapter media sends', () => {
 describe('BaileysAdapter store-backed ops', () => {
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
     fakeSock.sendMessage.mockResolvedValue({
       key: { id: 'OUT', remoteJid: '628111@s.whatsapp.net', fromMe: true },
@@ -542,6 +549,7 @@ describe('BaileysAdapter group management', () => {
 
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
   });
 
@@ -618,6 +626,7 @@ describe('BaileysAdapter group management', () => {
 describe('BaileysAdapter profile + block', () => {
   beforeEach(() => {
     fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
     jest.clearAllMocks();
   });
 
@@ -643,5 +652,138 @@ describe('BaileysAdapter profile + block', () => {
     expect(fakeSock.updateBlockStatus).toHaveBeenCalledWith('628111@s.whatsapp.net', 'block');
     await adapter.unblockContact('628111@s.whatsapp.net');
     expect(fakeSock.updateBlockStatus).toHaveBeenCalledWith('628111@s.whatsapp.net', 'unblock');
+  });
+});
+
+describe('BaileysAdapter contact + chat reads', () => {
+  beforeEach(() => {
+    fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
+    jest.clearAllMocks();
+  });
+
+  const ready = async (): Promise<BaileysAdapter> => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    fakeSock.fire('connection.update', { connection: 'open' });
+    return adapter;
+  };
+
+  it('populates contacts from contacts.upsert and reads them', async () => {
+    const adapter = await ready();
+    fakeSock.fire('contacts.upsert', [{ id: '628111@s.whatsapp.net', notify: 'Al' }]);
+    const contacts = await adapter.getContacts();
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0]).toMatchObject({ id: '628111@s.whatsapp.net', pushName: 'Al', number: '628111' });
+    expect((await adapter.getContactById('628111@s.whatsapp.net'))?.number).toBe('628111');
+    expect(await adapter.getContactById('x@s.whatsapp.net')).toBeNull();
+  });
+
+  it('populates chats + last message and reads getChats', async () => {
+    const adapter = await ready();
+    fakeSock.fire('chats.upsert', [{ id: '628111@s.whatsapp.net', name: 'Alice', unreadCount: 1 }]);
+    fakeSock.fire('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'M1' },
+          message: { conversation: 'hi' },
+          messageTimestamp: 1700000010,
+        },
+      ],
+    });
+    const chats = await adapter.getChats();
+    expect(chats[0]).toEqual({
+      id: '628111@s.whatsapp.net',
+      name: 'Alice',
+      isGroup: false,
+      unreadCount: 1,
+      timestamp: 1700000010,
+      lastMessage: 'hi',
+    });
+  });
+
+  it('populates from messaging-history.set incl. lid mappings', async () => {
+    const adapter = await ready();
+    fakeSock.fire('messaging-history.set', {
+      contacts: [{ id: '628222@s.whatsapp.net', name: 'Bob' }],
+      chats: [{ id: '628222@s.whatsapp.net', name: 'Bob' }],
+      messages: [],
+      lidPnMappings: [{ lid: '111@lid', pn: '628999@s.whatsapp.net' }],
+    });
+    expect(await adapter.getContacts()).toHaveLength(1);
+    expect(await adapter.resolveContactPhone('111@lid')).toBe('628999');
+    expect(await adapter.resolveContactPhone('628222@s.whatsapp.net')).toBe('628222');
+  });
+
+  it('contact/chat reads reject with EngineNotReadyError before connect', async () => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    await expect(adapter.getContacts()).rejects.toBeInstanceOf(EngineNotReadyError);
+  });
+});
+
+describe('BaileysAdapter sendSeen + deleteChat', () => {
+  beforeEach(() => {
+    fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    fakeSock.resetEmitter();
+    jest.clearAllMocks();
+  });
+
+  const readyWithMessage = async (): Promise<BaileysAdapter> => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    fakeSock.fire('connection.update', { connection: 'open' });
+    fakeSock.fire('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'M1' },
+          message: { conversation: 'hi' },
+          messageTimestamp: 1700000020,
+        },
+      ],
+    });
+    return adapter;
+  };
+
+  it('sendSeen marks the last message read and returns true', async () => {
+    const adapter = await readyWithMessage();
+    const ok = await adapter.sendSeen('628111@s.whatsapp.net');
+    expect(ok).toBe(true);
+    expect(fakeSock.readMessages).toHaveBeenCalledWith([
+      { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'M1' },
+    ]);
+  });
+
+  it('sendSeen returns false when no last message is known', async () => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    fakeSock.fire('connection.update', { connection: 'open' });
+    expect(await adapter.sendSeen('628999@s.whatsapp.net')).toBe(false);
+    expect(fakeSock.readMessages).not.toHaveBeenCalled();
+  });
+
+  it('deleteChat revokes the chat via chatModify with the last message', async () => {
+    const adapter = await readyWithMessage();
+    const ok = await adapter.deleteChat('628111@s.whatsapp.net');
+    expect(ok).toBe(true);
+    expect(fakeSock.chatModify).toHaveBeenCalledWith(
+      {
+        delete: true,
+        lastMessages: [
+          { key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'M1' }, messageTimestamp: 1700000020 },
+        ],
+      },
+      '628111@s.whatsapp.net',
+    );
+  });
+
+  it('deleteChat returns false when no last message is known', async () => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    fakeSock.fire('connection.update', { connection: 'open' });
+    expect(await adapter.deleteChat('628999@s.whatsapp.net')).toBe(false);
+    expect(fakeSock.chatModify).not.toHaveBeenCalled();
   });
 });
