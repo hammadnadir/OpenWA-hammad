@@ -7,6 +7,9 @@ import { SessionService, ACK_RECONCILE_DELAY_MS } from './session.service';
 import { Session, SessionStatus } from './entities/session.entity';
 import { Message, MessageStatus } from '../message/entities/message.entity';
 import { MessageBatch } from '../message/entities/message-batch.entity';
+import { Webhook } from '../webhook/entities/webhook.entity';
+import { Template } from '../template/entities/template.entity';
+import { BaileysStoredMessage } from '../../engine/adapters/baileys-stored-message.entity';
 import { EngineFactory } from '../../engine/engine.factory';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
 import { EventsGateway } from '../events/events.gateway';
@@ -60,9 +63,19 @@ describe('SessionService', () => {
     messageRepository = {
       find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn().mockResolvedValue(null),
-      create: jest.fn(),
+      // `create()` in TypeORM just builds the entity instance; it does NOT populate @PrimaryGeneratedColumn
+      // or @CreateDateColumn. Mirror that: return the input as-is (no id/createdAt) so tests see the same
+      // shape the production code does before the `insert()` generated-maps merge.
+      create: jest.fn().mockImplementation((data: Partial<Message>) => ({ ...data }) as Message),
       save: jest.fn().mockResolvedValue(undefined),
-      insert: jest.fn().mockResolvedValue(undefined),
+      // `insert()` returns an InsertResult; `identifiers[0]` carries the PK on both SQLite + Postgres.
+      // `generatedMaps[0]` carries createdAt (Postgres yes; SQLite historically no — left absent here to
+      // match the local SQLite default DB).
+      insert: jest.fn().mockResolvedValue({
+        identifiers: [{ id: 'gen-uuid-1' }],
+        generatedMaps: [],
+        raw: undefined,
+      }),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
@@ -94,6 +107,7 @@ describe('SessionService', () => {
 
     engineFactory = {
       create: jest.fn().mockReturnValue(mockEngine),
+      purgeSessionData: jest.fn().mockResolvedValue(undefined),
     };
 
     eventsGateway = {
@@ -188,6 +202,28 @@ describe('SessionService', () => {
       expect(stoppingOf().has('sess-uuid-1')).toBe(false); // stop-mark cleared (no wedge)
       expect(hookManager.execute).toHaveBeenCalledWith('session:deleted', expect.anything(), expect.anything());
       expect(dataSource.transaction).toHaveBeenCalled(); // DB removal still ran
+    });
+
+    it('delete() purges the engine on-disk auth dir (keyed by session NAME) so a same-name recreate starts clean', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(
+        createMockSession({ id: 'sess-uuid-1', name: 'test-session' }),
+      );
+      enginesOf().set('sess-uuid-1', { forceDestroy: jest.fn().mockResolvedValue(undefined) });
+
+      await service.delete('sess-uuid-1');
+
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
+    });
+
+    it('delete() purges even when no engine is loaded (a stopped session has none)', async () => {
+      (repository.findOne as jest.Mock).mockResolvedValue(
+        createMockSession({ id: 'sess-uuid-1', name: 'test-session' }),
+      );
+      // No engine in the map — the common delete case.
+
+      await service.delete('sess-uuid-1');
+
+      expect(engineFactory.purgeSessionData).toHaveBeenCalledWith('test-session');
     });
 
     it('stop() completes when engine.disconnect() rejects — map reconciled, status updated', async () => {
@@ -484,7 +520,7 @@ describe('SessionService', () => {
       expect(mockEngine.forceDestroy).toHaveBeenCalled();
     });
 
-    it('removes the session messages and bulk batches in the same transaction (no orphaned rows)', async () => {
+    it('removes the session and all its child rows explicitly in one transaction (SQLite cascade is off)', async () => {
       const session = createMockSession();
       (repository.findOne as jest.Mock).mockResolvedValue(session);
 
@@ -496,9 +532,14 @@ describe('SessionService', () => {
 
       await service.delete('sess-uuid-1');
 
-      // These tables carry sessionId but have no FK cascade, so delete() must clean them explicitly.
+      // messages/message_batches have no FK; webhooks/templates/baileys_stored_messages declare an
+      // ON DELETE CASCADE FK, but SQLite runs with foreign_keys OFF so it never fires — delete() must
+      // clear ALL of them explicitly or a session delete orphans them (webhooks retain the secret).
       expect(managerDelete).toHaveBeenCalledWith(Message, { sessionId: 'sess-uuid-1' });
       expect(managerDelete).toHaveBeenCalledWith(MessageBatch, { sessionId: 'sess-uuid-1' });
+      expect(managerDelete).toHaveBeenCalledWith(Webhook, { sessionId: 'sess-uuid-1' });
+      expect(managerDelete).toHaveBeenCalledWith(Template, { sessionId: 'sess-uuid-1' });
+      expect(managerDelete).toHaveBeenCalledWith(BaileysStoredMessage, { sessionId: 'sess-uuid-1' });
       expect(managerRemove).toHaveBeenCalledWith(session);
     });
   });
@@ -610,6 +651,24 @@ describe('SessionService', () => {
 
       expect(intern().engines.has('sess-uuid-1')).toBe(false);
       expect(mockEngine.forceDestroy).toHaveBeenCalled();
+    });
+  });
+
+  describe('scheduleReconnect (max attempts)', () => {
+    it('reports "auto-reconnect disabled" (not "failed after 0 attempts") when maxAttempts is 0', async () => {
+      const i = service as unknown as {
+        reconnectStates: Map<string, { attempts: number; timer: null; maxAttempts: number; baseDelay: number }>;
+        sessionErrors: Map<string, string>;
+        scheduleReconnect: (id: string, session: Session) => void;
+      };
+      i.reconnectStates.set('sess-uuid-1', { attempts: 0, timer: null, maxAttempts: 0, baseDelay: 5000 });
+      (repository.update as jest.Mock).mockResolvedValue({ affected: 1 });
+
+      i.scheduleReconnect('sess-uuid-1', createMockSession());
+      await new Promise(resolve => setImmediate(resolve));
+
+      // maxAttempts:0 means auto-reconnect is OFF, not that 0 attempts were tried and failed.
+      expect(i.sessionErrors.get('sess-uuid-1')).toMatch(/auto-reconnect is disabled/i);
     });
   });
 
@@ -1216,16 +1275,16 @@ describe('SessionService', () => {
     it('serializes concurrent reactions on the same message so neither sender is clobbered', async () => {
       const callbacks = await startAndCaptureCallbacks();
 
-      // Simulate a real DB: each findOne returns a FRESH snapshot of the persisted row, and save
-      // writes it back. Without per-message serialization the two handlers read the same empty
-      // snapshot and the second save clobbers the first sender's reaction.
+      // Simulate a real DB: each findOne returns a FRESH snapshot of the persisted row, and the scoped
+      // update writes the new metadata back. Without per-message serialization the two handlers read the
+      // same empty snapshot and the second write clobbers the first sender's reaction.
       type Row = { metadata?: Record<string, unknown> };
       const clone = (r: Row): Row => JSON.parse(JSON.stringify(r)) as Row;
       let stored: Row = { metadata: {} };
       (messageRepository.findOne as jest.Mock).mockImplementation(() => Promise.resolve(clone(stored)));
-      (messageRepository.save as jest.Mock).mockImplementation((m: Row) => {
-        stored = clone(m);
-        return Promise.resolve(m);
+      (messageRepository.update as jest.Mock).mockImplementation((_c: unknown, patch: Row) => {
+        stored = clone({ ...stored, ...patch });
+        return Promise.resolve({ affected: 1 });
       });
 
       callbacks.onMessageReaction!({ messageId: 'wa-1', chatId: 'c', senderId: 'alice', reaction: '👍' });
@@ -1236,15 +1295,34 @@ describe('SessionService', () => {
       expect(stored.metadata?.reactions).toEqual({ alice: '👍', bob: '🎉' });
     });
 
+    it('persists a reaction via a scoped metadata update, never a full-row save (protects ack status)', async () => {
+      const callbacks = await startAndCaptureCallbacks();
+      // The row was already advanced to DELIVERED by a concurrent ack. A full-row save(msg) would
+      // re-persist the stale status read at findOne time and clobber it; the write must be scoped to
+      // the metadata column only, keyed by (sessionId, waMessageId).
+      (messageRepository.findOne as jest.Mock).mockResolvedValue({ status: 'delivered', metadata: {} });
+      (messageRepository.save as jest.Mock).mockClear();
+      (messageRepository.update as jest.Mock).mockClear().mockResolvedValue({ affected: 1 });
+
+      callbacks.onMessageReaction!({ messageId: 'wa-1', chatId: 'c', senderId: 'alice', reaction: '👍' });
+      for (let i = 0; i < 3; i++) await flush();
+
+      expect(messageRepository.save).not.toHaveBeenCalled();
+      expect(messageRepository.update).toHaveBeenCalledWith(
+        { sessionId: 'sess-uuid-1', waMessageId: 'wa-1' },
+        { metadata: { reactions: { alice: '👍' } } },
+      );
+    });
+
     it('removes a sender reaction on a cleared reaction event (delete branch)', async () => {
       const callbacks = await startAndCaptureCallbacks();
       type Row = { metadata?: Record<string, unknown> };
       const clone = (r: Row): Row => JSON.parse(JSON.stringify(r)) as Row;
       let stored: Row = { metadata: { reactions: { alice: '👍', bob: '🎉' } } };
       (messageRepository.findOne as jest.Mock).mockImplementation(() => Promise.resolve(clone(stored)));
-      (messageRepository.save as jest.Mock).mockImplementation((m: Row) => {
-        stored = clone(m);
-        return Promise.resolve(m);
+      (messageRepository.update as jest.Mock).mockImplementation((_c: unknown, patch: Row) => {
+        stored = clone({ ...stored, ...patch });
+        return Promise.resolve({ affected: 1 });
       });
 
       callbacks.onMessageReaction!({ messageId: 'wa-1', chatId: 'c', senderId: 'alice', reaction: '' });
@@ -1260,11 +1338,11 @@ describe('SessionService', () => {
       const clone = (r: Row): Row => JSON.parse(JSON.stringify(r)) as Row;
       let stored: Row = { metadata: {} };
       (messageRepository.findOne as jest.Mock).mockImplementation(() => Promise.resolve(clone(stored)));
-      (messageRepository.save as jest.Mock)
+      (messageRepository.update as jest.Mock)
         .mockRejectedValueOnce(new Error('write blip')) // alice's write fails
-        .mockImplementation((m: Row) => {
-          stored = clone(m);
-          return Promise.resolve(m);
+        .mockImplementation((_c: unknown, patch: Row) => {
+          stored = clone({ ...stored, ...patch });
+          return Promise.resolve({ affected: 1 });
         });
 
       callbacks.onMessageReaction!({ messageId: 'wa-1', chatId: 'c', senderId: 'alice', reaction: '👍' });
@@ -1278,7 +1356,7 @@ describe('SessionService', () => {
     it('cleans up the per-message serialization entry after the chain drains (no leak)', async () => {
       const callbacks = await startAndCaptureCallbacks();
       (messageRepository.findOne as jest.Mock).mockResolvedValue({ metadata: {} });
-      (messageRepository.save as jest.Mock).mockResolvedValue(undefined);
+      (messageRepository.update as jest.Mock).mockResolvedValue({ affected: 1 });
 
       callbacks.onMessageReaction!({ messageId: 'wa-1', chatId: 'c', senderId: 'alice', reaction: '👍' });
 
@@ -1294,9 +1372,9 @@ describe('SessionService', () => {
       const clone = (r: Row): Row => JSON.parse(JSON.stringify(r)) as Row;
       let stored: Row = { metadata: {} };
       (messageRepository.findOne as jest.Mock).mockImplementation(() => Promise.resolve(clone(stored)));
-      (messageRepository.save as jest.Mock).mockImplementation((m: Row) => {
-        stored = clone(m);
-        return Promise.resolve(m);
+      (messageRepository.update as jest.Mock).mockImplementation((_c: unknown, patch: Row) => {
+        stored = clone({ ...stored, ...patch });
+        return Promise.resolve({ affected: 1 });
       });
 
       callbacks.onMessageReaction!({ messageId: 'wa-1', chatId: 'c', senderId: 'alice', reaction: '👍' });
@@ -1365,6 +1443,69 @@ describe('SessionService', () => {
 
       expect(messageRepository.insert).toHaveBeenCalled();
       expect(dispatchedEvents('message.received')).toHaveLength(1);
+    });
+
+    it('emits message:persisted with a non-empty message.id on inbound (insert generated PK merged)', async () => {
+      // Asymmetry guard: the inbound path uses `insert()` (the dedup oracle), which — unlike `save()` —
+      // does NOT merge @PrimaryGeneratedColumn/@CreateDateColumn back onto the entity. Without the
+      // identifiers/generatedMaps merge, `dbMessage.id` is undefined here, while the outbound path
+      // (MessageService.saveOutgoingMessage) emits a real id via `save()`. A plugin subscribing to
+      // `message:persisted` would see id=undefined on inbound but a real id on outbound. This pins the
+      // inbound payload to carry the DB-generated id, mirroring the outbound emit test.
+      const callbacks = await startAndCaptureCallbacks();
+
+      callbacks.onMessage!(makeMessage({ id: 'wa-in-1', fromMe: false }));
+      await flush();
+
+      const persistedCalls = (hookManager.execute as jest.Mock).mock.calls.filter(
+        ([ev]: unknown[]) => ev === 'message:persisted',
+      ) as unknown[][];
+      expect(persistedCalls).toHaveLength(1);
+      const payload = persistedCalls[0][1] as { sessionId: string; message: { id?: string } };
+      expect(payload.sessionId).toBe('sess-uuid-1');
+      expect(payload.message.id).toBeTruthy(); // the DB-generated id, not undefined
+      expect(payload.message.id).toBe('gen-uuid-1'); // merged from InsertResult.identifiers[0]
+      expect(persistedCalls[0][2]).toMatchObject({ sessionId: 'sess-uuid-1', source: 'SessionService' });
+    });
+
+    it('does not emit message:persisted on a duplicate re-fire (loses the dedup insert race)', async () => {
+      // The emit lives AFTER the dedup gate. A re-fire that hits the UNIQUE(sessionId, waMessageId)
+      // constraint must not emit message:persisted — no row was durably stored on this attempt.
+      const callbacks = await startAndCaptureCallbacks();
+      // Emulate the SQLite UNIQUE-violation phrasing that `isUniqueConstraintError` matches via regex.
+      (messageRepository.insert as jest.Mock).mockRejectedValueOnce(
+        new Error('UNIQUE constraint failed: messages.sessionId, messages.waMessageId'),
+      );
+
+      callbacks.onMessage!(makeMessage({ id: 'wa-dup-1', fromMe: false }));
+      await flush();
+
+      const persistedCalls = (hookManager.execute as jest.Mock).mock.calls.filter(
+        ([ev]: unknown[]) => ev === 'message:persisted',
+      );
+      expect(persistedCalls).toHaveLength(0);
+    });
+
+    it('does not emit message:persisted when insert throws a transient (non-unique) error', async () => {
+      // Fail-open on transient DB errors (SQLITE_BUSY, lock-timeout, connection drop) is correct for
+      // webhook/WS dispatch — a real inbound message must never be dropped. But the row was never
+      // stored and dbMessage.id is undefined, so the message:persisted hook must NOT fire (it would
+      // hand plugins an id-less payload for a row that isn't in the DB). The hook is gated on a
+      // `persisted` flag set only after the generated-maps merge succeeds. Webhook/WS still dispatch.
+      const callbacks = await startAndCaptureCallbacks();
+      (messageRepository.insert as jest.Mock).mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'));
+
+      callbacks.onMessage!(makeMessage({ id: 'wa-busy-1', fromMe: false }));
+      await flush();
+
+      const persistedCalls = (hookManager.execute as jest.Mock).mock.calls.filter(
+        ([ev]: unknown[]) => ev === 'message:persisted',
+      );
+      expect(persistedCalls).toHaveLength(0);
+      // Fail-open: webhook still dispatched so the inbound message is not silently dropped. (The
+      // payload is `{}` here because the hook mock returns `data: {}`; the point is that dispatch
+      // fired at all on a transient DB error — only the message:persisted hook is gated on `persisted`.)
+      expect(webhookService.dispatch).toHaveBeenCalledWith('sess-uuid-1', 'message.received', expect.anything());
     });
 
     it('does not persist (no orphan row) when the session is deleted mid hook chain', async () => {
