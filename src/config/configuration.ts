@@ -83,6 +83,8 @@ export default () => ({
     // SSL configuration
     ssl: process.env.DATABASE_SSL === 'true',
     sslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+    // MongoDB configuration
+    url: process.env.MONGODB_URI,
   },
 
   // WhatsApp engine configuration

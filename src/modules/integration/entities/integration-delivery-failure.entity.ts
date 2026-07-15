@@ -1,12 +1,15 @@
-import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
-import { jsonColumnType } from '../../../common/utils/column-types';
+import { Column, CreateDateColumn, Entity, Index, ObjectId } from 'typeorm';
+import { jsonColumnType, IdDecorator, MongoObjectIdColumn } from '../../../common/utils/column-types';
 
 // DLQ-of-record for both inbound (ingress) and outbound (provider egress) delivery failures.
 // Generalizes webhook_delivery_failures. sessionId is provenance (no FK).
 @Entity('integration_delivery_failures')
 @Index('IDX_integration_delivery_failures_instance', ['pluginId', 'instanceId'])
 export class IntegrationDeliveryFailure {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   @Column()

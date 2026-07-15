@@ -20,6 +20,7 @@ export function mapEngineHistoryMessage(h: EngineHistoryMessage): ChatMessage {
     body: h.body ?? '',
     type: h.type as MessageType,
     direction: h.fromMe ? 'outgoing' : 'incoming',
+    author: h.author,
     status: 'read',
     timestamp: h.timestamp,
     createdAt: new Date((h.timestamp ?? 0) * 1000).toISOString(),

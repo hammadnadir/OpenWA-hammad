@@ -1,3 +1,5 @@
+import { PrimaryGeneratedColumn, Column, PrimaryColumn, ObjectIdColumn } from 'typeorm';
+
 /**
  * Cross-database column type helpers.
  *
@@ -16,6 +18,7 @@
  */
 
 const isPostgres = (): boolean => process.env.DATABASE_TYPE === 'postgres';
+const isMongo = (): boolean => process.env.DATABASE_TYPE === 'mongodb';
 
 /**
  * Always 'simple-json' (TypeORM JSON.stringify/parse over a `text` column), on BOTH dialects.
@@ -34,3 +37,25 @@ export const jsonColumnType = (): 'simple-json' => 'simple-json';
  * Use with DateTransformer for SQLite compatibility.
  */
 export const dateColumnType = (): 'timestamp' | 'text' => (isPostgres() ? 'timestamp' : 'text');
+
+// No-op decorator helper for unused columns/decorators under specific databases
+const noopDecorator = () => (target: any, propertyKey: string) => {};
+
+// Conditional decorators for MongoDB support
+export const MongoObjectIdColumn = isMongo()
+  ? ObjectIdColumn()
+  : noopDecorator();
+
+export const IdDecorator = isMongo()
+  ? Column({ nullable: true })
+  : PrimaryGeneratedColumn('uuid');
+
+export const PrimaryColumnDecorator = isMongo()
+  ? Column()
+  : PrimaryColumn();
+
+// MongoDB text index on `body` field. TypeORM's Index() factory does not support the
+// `{ text: true }` shorthand at the property level; instead we mark it as a regular column
+// and rely on the @Entity-level text index declared in message.entity.ts via @Index decorator.
+// This export is kept as a noop decorator so entity files that import it still compile.
+export const BodyIndex = noopDecorator();

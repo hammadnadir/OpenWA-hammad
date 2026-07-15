@@ -1,5 +1,6 @@
-import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, ObjectId } from 'typeorm';
 import { Session } from '../../modules/session/entities/session.entity';
+import { IdDecorator, MongoObjectIdColumn } from '../../common/utils/column-types';
 
 /**
  * Persisted Baileys message store (the lib ships none). Holds the serialized WAMessage proto
@@ -13,7 +14,10 @@ import { Session } from '../../modules/session/entities/session.entity';
 @Index(['sessionId', 'waMessageId'], { unique: true }) // lookup + dedup (send-return vs upsert echo)
 @Index(['sessionId', 'createdAt']) // eviction ordering
 export class BaileysStoredMessage {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   @Column()

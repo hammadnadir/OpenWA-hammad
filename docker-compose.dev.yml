@@ -15,18 +15,13 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: openwa-api
-    # Container hardening — same posture as production (same Dockerfile/entrypoint).
     security_opt:
-      - 'no-new-privileges:true'
-    cap_drop:
-      - ALL
+      - seccomp:unconfined
+      - apparmor:unconfined
+    privileged: true
     cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETGID
-      - SETUID
-    read_only: true
+      - SYS_PTRACE
+    shm_size: '2gb'
     tmpfs:
       - /tmp
     # Per-container PID ceiling (cgroup pids.max). 2048 fits several whatsapp-web.js sessions, which
@@ -54,6 +49,7 @@ services:
       - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
       - DATABASE_NAME=${DATABASE_NAME:-/app/data/openwa.sqlite}
       - DATABASE_SYNCHRONIZE=${DATABASE_SYNCHRONIZE:-true}
+      - MONGODB_URI=${MONGODB_URI:-}
       # Engine. Forwarded empty by default so the dashboard (Infrastructure > Engine) selects the
       # active engine via data/.env.generated (default whatsapp-web.js); main.ts treats a blank
       # ENGINE_TYPE as unset, so .env.generated wins. Set ENGINE_TYPE in your .env/host to pin an
@@ -77,6 +73,8 @@ services:
       - WEBHOOK_TIMEOUT=${WEBHOOK_TIMEOUT:-10000}
       - WEBHOOK_MAX_RETRIES=${WEBHOOK_MAX_RETRIES:-3}
       - QUEUE_ENABLED=${QUEUE_ENABLED:-false}
+      - BLOB_READ_WRITE_TOKEN=${BLOB_READ_WRITE_TOKEN:-}
+      - WEBHOOK_SSRF_PROTECT=${WEBHOOK_SSRF_PROTECT:-false}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

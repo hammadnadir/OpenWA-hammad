@@ -23,8 +23,8 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   };
 
   const dbType = str('DATABASE_TYPE');
-  if (dbType && dbType !== 'sqlite' && dbType !== 'postgres') {
-    errors.push(`DATABASE_TYPE must be "sqlite" or "postgres" (got "${dbType}")`);
+  if (dbType && dbType !== 'sqlite' && dbType !== 'postgres' && dbType !== 'mongodb') {
+    errors.push(`DATABASE_TYPE must be "sqlite", "postgres", or "mongodb" (got "${dbType}")`);
   }
 
   // Whitelist the registered engine/storage ids so a typo fails fast at boot instead of silently
@@ -39,7 +39,11 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   checkEnum('ENGINE_TYPE', ['whatsapp-web.js', 'baileys']);
   checkEnum('STORAGE_TYPE', ['local', 's3']);
 
-  if (dbType === 'postgres') {
+  if (dbType === 'mongodb') {
+    if (!str('MONGODB_URI')) {
+      errors.push('MONGODB_URI is required when DATABASE_TYPE=mongodb');
+    }
+  } else if (dbType === 'postgres') {
     for (const key of ['DATABASE_HOST', 'DATABASE_USERNAME', 'DATABASE_PASSWORD']) {
       if (!str(key)) {
         errors.push(`${key} is required when DATABASE_TYPE=postgres`);

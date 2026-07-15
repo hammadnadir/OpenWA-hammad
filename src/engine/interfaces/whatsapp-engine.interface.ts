@@ -534,8 +534,14 @@ export interface IWhatsAppEngine {
 
   // Chats
   getChats(): Promise<ChatSummary[]>;
-  sendSeen(chatId: string): Promise<boolean>;
-  markUnread(chatId: string): Promise<boolean>;
+  /**
+   * Mark all messages in a chat as read.
+   */
+  sendSeen(chatId: string, messageKey?: { id: string, fromMe: boolean, participant?: string }): Promise<boolean>;
+  /**
+   * Mark a chat as unread. Not supported by all adapters.
+   */
+  markUnread(chatId: string, messageKey?: { id: string, fromMe: boolean, participant?: string }): Promise<boolean>;
   deleteChat(chatId: string): Promise<boolean>;
   /**
    * Send a typing/recording presence indicator to a chat, or clear it (`paused`).

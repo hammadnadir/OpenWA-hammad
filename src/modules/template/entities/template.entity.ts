@@ -1,21 +1,25 @@
 import {
   Entity,
   Column,
-  PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
   Index,
+  ObjectId,
 } from 'typeorm';
 import { Session } from '../../session/entities/session.entity';
+import { IdDecorator, MongoObjectIdColumn } from '../../../common/utils/column-types';
 
 // One template name per session: makes resolve-by-name deterministic and rejects duplicates.
 // Mirrored by the AddTemplateNameUnique migration for non-synchronize (Postgres / opted-out) DBs.
 @Index('IDX_templates_session_name', ['sessionId', 'name'], { unique: true })
 @Entity('templates')
 export class Template {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   // varchar (not uuid) to match the authoritative migration DDL and sessions.id; the data connection

@@ -83,5 +83,19 @@ export function buildPostgresDataSourceOptions(env: NodeJS.ProcessEnv = process.
 
 export const postgresDataSourceOptions: DataSourceOptions = buildPostgresDataSourceOptions();
 
+const mongodbDataSourceOptions: DataSourceOptions = {
+  type: 'mongodb',
+  url: process.env.MONGODB_URI,
+  entities: dataEntities,
+  synchronize: true,
+  logging: process.env.DATABASE_LOGGING === 'true',
+};
+
 // Exactly ONE DataSource instance is exported (the default), selected by DATABASE_TYPE.
-export default new DataSource(dbType === 'postgres' ? postgresDataSourceOptions : sqliteDataSourceOptions);
+export default new DataSource(
+  dbType === 'mongodb'
+    ? mongodbDataSourceOptions
+    : dbType === 'postgres'
+      ? postgresDataSourceOptions
+      : sqliteDataSourceOptions
+);

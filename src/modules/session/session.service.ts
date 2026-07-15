@@ -44,6 +44,7 @@ import {
   deliveryStatusToAck,
   ackStatusTransitionFrom,
 } from '../message/message-status.util';
+import { put } from '@vercel/blob';
 
 interface ReconnectState {
   attempts: number;
@@ -599,12 +600,22 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         // Insert-or-ignore: a live onMessage insert can land between the `seen` SELECT above and this
         // write, colliding on UNIQUE(sessionId, waMessageId). orIgnore skips the collision instead of
         // throwing and aborting the whole batch (history is best-effort, persist-never-dispatch).
-        await this.messageRepository
-          .createQueryBuilder()
-          .insert()
-          .values(rows as unknown as QueryDeepPartialEntity<Message>[])
-          .orIgnore()
-          .execute();
+        if (this.messageRepository.metadata.connection.options.type === 'mongodb') {
+          for (const row of rows) {
+            try {
+              await this.messageRepository.save(row);
+            } catch (error) {
+              // Ignore duplicate key/collision errors
+            }
+          }
+        } else {
+          await this.messageRepository
+            .createQueryBuilder()
+            .insert()
+            .values(rows as unknown as QueryDeepPartialEntity<Message>[])
+            .orIgnore()
+            .execute();
+        }
         inserted += rows.length;
       }
     }
@@ -694,7 +705,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         this.sessionErrors.delete(id);
 
         void this.sessionRepository
-          .update(id, {
+          .update({ id }, {
             status: SessionStatus.READY,
             phone,
             pushName,
@@ -737,7 +748,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
           action: 'message_received',
         });
         // Update last active timestamp
-        void this.sessionRepository.update(id, { lastActiveAt: new Date() }).catch(() => undefined);
+        void this.sessionRepository.update({ id }, { lastActiveAt: new Date() }).catch(() => undefined);
         // Convert IncomingMessage to plain object for dispatch
         const messageData = { ...message };
 
@@ -765,6 +776,24 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
 
             const metadata: Record<string, unknown> = {};
             if (incoming.media) {
+              if (incoming.media.data && !incoming.media.omitted) {
+                const token = process.env.BLOB_READ_WRITE_TOKEN;
+                if (token) {
+                  try {
+                    const fileBuffer = Buffer.from(incoming.media.data, 'base64');
+                    const filename = incoming.media.filename || `media-${Date.now()}`;
+                    const blob = await put(filename, fileBuffer, {
+                      access: 'public',
+                      contentType: incoming.media.mimetype,
+                      token: token,
+                      addRandomSuffix: true,
+                    });
+                    incoming.media.data = blob.url;
+                  } catch (uploadError) {
+                    this.logger.error('Failed to upload incoming media to Vercel Blob', String(uploadError));
+                  }
+                }
+              }
               metadata.media = incoming.media;
             }
             if (incoming.quotedMessage) {
@@ -782,6 +811,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
               chatId: incoming.chatId,
               chatName,
               from: incoming.from,
+              author: incoming.author,
               to: incoming.to,
               body: incoming.body,
               type: incoming.type,
@@ -883,7 +913,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
           action: 'message_sent',
         });
         // Update last active timestamp
-        void this.sessionRepository.update(id, { lastActiveAt: new Date() }).catch(() => undefined);
+        void this.sessionRepository.update({ id }, { lastActiveAt: new Date() }).catch(() => undefined);
         const messageData = { ...message };
 
         // Execute hook for message sent - plugins can modify or stop processing
@@ -1012,12 +1042,14 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         // Match on `revokedId` (the ORIGINAL deleted message's id) when present: on wwebjs
         // `message.id` is the revocation notification, which never matches a stored row.
         // `revokedId` falls back to `id` (Baileys, where the two are the same).
-        const revokedWaMessageId = message.revokedId ?? message.id;
-        void this.messageRepository
-          .update({ sessionId: id, waMessageId: revokedWaMessageId }, { body: '', type: 'revoked' })
-          .catch(err => {
-            this.logger.error(`Failed to update revoked message: ${revokedWaMessageId}`, String(err));
-          });
+        // CRM policy: preserve the original message even when the sender revokes it on WhatsApp.
+        // The webhook (message.revoked) and WS event still fire so downstream consumers can react.
+        // const revokedWaMessageId = message.revokedId ?? message.id;
+        // void this.messageRepository
+        //   .update({ sessionId: id, waMessageId: revokedWaMessageId }, { body: '', type: 'revoked' })
+        //   .catch(err => {
+        //     this.logger.error(`Failed to update revoked message: ${revokedWaMessageId}`, String(err));
+        //   });
 
         // Notify consumers regardless of whether the row existed: webhook (message.revoked
         // is a declared event) + the real-time dashboard stream.
@@ -1461,10 +1493,78 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       throw new BadRequestException('Session is not started');
     }
 
-    // Most-recent first, then bound the response window. Sorting before the cap means a capped
-    // response is the N newest chats (what clients show first) rather than an arbitrary slice.
-    const chats = [...(await engine.getChats())].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    return paginate(chats, opts.limit, opts.offset);
+    // Fetch unique chatIds with their latest messages from the DB (JS-grouping approach)
+    let dbChats: ChatSummary[] = [];
+    try {
+      const recentMessages = await this.messageRepository.find({
+        where: { sessionId: id },
+        order: { timestamp: 'DESC' },
+        take: 2000,
+      });
+
+      const seenChats = new Set<string>();
+      for (const m of recentMessages) {
+        if (!m.chatId || seenChats.has(m.chatId)) continue;
+        seenChats.add(m.chatId);
+        dbChats.push({
+          id: m.chatId,
+          name: m.chatId.split('@')[0],
+          unreadCount: 0,
+          timestamp: m.timestamp,
+          lastMessage: m.body || (m.type !== 'text' ? `[${m.type}]` : ''),
+          isGroup: m.chatId.endsWith('@g.us'),
+        });
+      }
+      this.logger.log(`getChats: found ${dbChats.length} unique chats from DB (${dbChats.filter(c => !c.isGroup).length} individual, ${dbChats.filter(c => c.isGroup).length} groups)`);
+    } catch (err) {
+      this.logger.error(`Failed to fetch historical chats from DB: ${err.message}`);
+    }
+
+    const engineChats = await engine.getChats();
+    this.logger.log(`getChats: engine returned ${engineChats.length} chats (${engineChats.filter(c => !c.isGroup).length} individual, ${engineChats.filter(c => c.isGroup).length} groups)`);
+    const chatMap = new Map<string, ChatSummary>();
+
+    // Put db chats first
+    for (const c of dbChats) {
+      chatMap.set(c.id, c);
+    }
+
+    // Overwrite/merge with engine chats
+    for (const c of engineChats) {
+      const existing = chatMap.get(c.id);
+      chatMap.set(c.id, {
+        ...existing,
+        ...c,
+        timestamp: c.timestamp || existing?.timestamp || 0,
+        lastMessage: c.lastMessage || existing?.lastMessage || '',
+      });
+    }
+
+    const chats = Array.from(chatMap.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    this.logger.log(`getChats: merged total ${chats.length} chats (${chats.filter(c => !c.isGroup).length} individual, ${chats.filter(c => c.isGroup).length} groups)`);
+    const paginated = paginate(chats, opts.limit, opts.offset);
+
+    // Hydrate missing last messages from the database
+    await Promise.all(paginated.map(async (chat) => {
+      if (!chat.lastMessage) {
+        try {
+          const lastMsg = await this.messageRepository.findOne({
+            where: { sessionId: id, chatId: chat.id },
+            order: { timestamp: 'DESC' }
+          });
+          if (lastMsg) {
+            chat.lastMessage = lastMsg.body || (lastMsg.type !== 'text' ? `[${lastMsg.type}]` : '');
+            if (!chat.timestamp) {
+              chat.timestamp = lastMsg.timestamp;
+            }
+          }
+        } catch (e) {
+          // Ignore hydration errors
+        }
+      }
+    }));
+
+    return paginated;
   }
 
   async sendSeen(id: string, chatId: string): Promise<boolean> {
@@ -1475,7 +1575,21 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       throw new BadRequestException('Session is not started');
     }
 
-    return engine.sendSeen(chatId);
+    const lastMsg = await this.messageRepository.findOne({
+      where: { sessionId: id, chatId },
+      order: { timestamp: 'DESC' }
+    });
+
+    let messageKey: { id: string, fromMe: boolean, participant?: string } | undefined = undefined;
+    if (lastMsg) {
+      messageKey = {
+        id: lastMsg.waMessageId || '',
+        fromMe: lastMsg.direction === 'outgoing',
+        participant: lastMsg.from !== chatId ? lastMsg.from : undefined
+      };
+    }
+
+    return engine.sendSeen(chatId, messageKey);
   }
 
   async markUnread(id: string, chatId: string): Promise<boolean> {
@@ -1486,7 +1600,21 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       throw new BadRequestException('Session is not started');
     }
 
-    return engine.markUnread(chatId);
+    const lastMsg = await this.messageRepository.findOne({
+      where: { sessionId: id, chatId },
+      order: { timestamp: 'DESC' }
+    });
+
+    let messageKey: { id: string, fromMe: boolean, participant?: string } | undefined = undefined;
+    if (lastMsg) {
+      messageKey = {
+        id: lastMsg.waMessageId || '',
+        fromMe: lastMsg.direction === 'outgoing',
+        participant: lastMsg.from !== chatId ? lastMsg.from : undefined
+      };
+    }
+
+    return engine.markUnread(chatId, messageKey);
   }
 
   async deleteChat(id: string, chatId: string): Promise<boolean> {
@@ -1512,7 +1640,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   private async updateStatus(id: string, status: SessionStatus): Promise<void> {
-    await this.sessionRepository.update(id, { status });
+    await this.sessionRepository.update({ id }, { status });
     this.logger.debug(`Session status updated to ${status}`, {
       sessionId: id,
       status,
@@ -1546,14 +1674,27 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     // DEFAULT_LIST_LIMIT for the HTTP routes, so reusing it here would silently undercount `total` and
     // `byStatus` on deployments with more sessions than that cap. A grouped COUNT is correct at any
     // scale and cheaper (no entity hydration).
-    const qb = this.sessionRepository
-      .createQueryBuilder('session')
-      .select('session.status', 'status')
-      .addSelect('COUNT(session.id)', 'count');
-    if (scope) {
-      qb.where('session.id IN (:...scope)', { scope });
+    let rows: Array<{ status: string; count: string | number }> = [];
+    if (this.sessionRepository.metadata.connection.options.type === 'mongodb') {
+      const pipeline: any[] = [];
+      if (scope) {
+        pipeline.push({ $match: { id: { $in: scope } } });
+      }
+      pipeline.push({ $group: { _id: '$status', count: { $sum: 1 } } });
+      const aggregateResult = await this.dataSource.mongoManager
+        .aggregate(Session, pipeline)
+        .toArray();
+      rows = aggregateResult.map((r: any) => ({ status: r._id, count: r.count }));
+    } else {
+      const qb = this.sessionRepository
+        .createQueryBuilder('session')
+        .select('session.status', 'status')
+        .addSelect('COUNT(session.id)', 'count');
+      if (scope) {
+        qb.where('session.id IN (:...scope)', { scope });
+      }
+      rows = await qb.groupBy('session.status').getRawMany<{ status: string; count: string }>();
     }
-    const rows = await qb.groupBy('session.status').getRawMany<{ status: string; count: string }>();
 
     const byStatus: Record<string, number> = {};
     let total = 0;

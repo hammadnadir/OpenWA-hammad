@@ -162,6 +162,7 @@ export interface ChatMessage {
   body: string;
   type: MessageType;
   direction: 'incoming' | 'outgoing';
+  author?: string;
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
   timestamp?: number;
   createdAt: string;
@@ -184,6 +185,7 @@ export interface EngineHistoryMessage {
   type: string;
   timestamp: number;
   fromMe?: boolean;
+  author?: string;
   media?: { mimetype: string; filename?: string; data?: string };
 }
 
@@ -193,6 +195,7 @@ export interface SendMediaPayload {
   mimetype?: string;
   filename?: string;
   caption?: string;
+  file?: File;
 }
 
 export interface HealthStatus {
@@ -562,6 +565,18 @@ export const messageApi = {
       method: 'POST',
       body: JSON.stringify({ chatId, url }),
     }),
+  /** Send a recorded voice note (PTT) as a multipart file upload with ptt=true. */
+  sendVoiceNote: (sessionId: string, chatId: string, blob: Blob) => {
+    const formData = new FormData();
+    const ext = blob.type.includes('ogg') ? 'ogg' : 'webm';
+    formData.append('file', blob, `voice_note.${ext}`);
+    formData.append('chatId', chatId);
+    formData.append('ptt', 'true');
+    return request<MessageResponse>(`/sessions/${sessionId}/messages/send-audio`, {
+      method: 'POST',
+      body: formData,
+    });
+  },
   sendDocument: (sessionId: string, chatId: string, url: string, filename?: string) =>
     request<MessageResponse>(`/sessions/${sessionId}/messages/send-document`, {
       method: 'POST',
@@ -572,11 +587,24 @@ export const messageApi = {
     chatId: string,
     mediaType: 'image' | 'video' | 'audio' | 'document',
     payload: SendMediaPayload,
-  ) =>
-    request<MessageResponse>(`/sessions/${sessionId}/messages/send-${mediaType}`, {
+  ) => {
+    if (payload.file) {
+      const formData = new FormData();
+      formData.append('file', payload.file);
+      formData.append('chatId', chatId);
+      if (payload.caption) {
+        formData.append('caption', payload.caption);
+      }
+      return request<MessageResponse>(`/sessions/${sessionId}/messages/send-${mediaType}`, {
+        method: 'POST',
+        body: formData,
+      });
+    }
+    return request<MessageResponse>(`/sessions/${sessionId}/messages/send-${mediaType}`, {
       method: 'POST',
       body: JSON.stringify({ chatId, ...payload }),
-    }),
+    });
+  },
   reply: (sessionId: string, data: { chatId: string; quotedMessageId: string; text: string }) =>
     request<MessageResponse>(`/sessions/${sessionId}/messages/reply`, {
       method: 'POST',

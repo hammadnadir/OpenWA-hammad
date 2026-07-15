@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as qrcode from 'qrcode';
 import type * as BaileysLib from '@whiskeysockets/baileys';
-import type { AnyMessageContent, MiscMessageGenerationOptions, WAMessage, WASocket } from '@whiskeysockets/baileys';
+import type { AnyMessageContent, MiscMessageGenerationOptions, WAMessage, WAMessageKey, WASocket } from '@whiskeysockets/baileys';
 import { buildIncomingMessageFromBaileys, extractBaileysBody, mapBaileysStatus } from './baileys-message-mapper';
 import { mapBaileysGroup, mapBaileysGroupInfo } from './baileys-group-mapper';
 import type { ILogger } from '@whiskeysockets/baileys/lib/Utils/logger.js';
@@ -140,7 +140,8 @@ export class BaileysAdapter implements IWhatsAppEngine {
   constructor(private readonly config: BaileysAdapterConfig) {
     // Isolate each session's auth state under its own subdirectory of the shared auth dir.
     this.authPath = path.join(config.authDir, config.sessionId);
-    this.sessionStore = new BaileysSessionStore(config.lidMappingStore, config.sessionId);
+    const storePath = path.join(this.authPath, 'store.json');
+    this.sessionStore = new BaileysSessionStore(config.lidMappingStore, config.sessionId, storePath);
     if (config.proxyUrl) {
       // Proxy support is gated for this slice — Baileys proxying needs an http/socks agent (a new dep).
       this.logger.warn('Proxy configured but not supported by the baileys engine in this slice; ignoring it', {
@@ -472,11 +473,12 @@ export class BaileysAdapter implements IWhatsAppEngine {
 
   async sendTextMessage(chatId: string, text: string, mentions?: string[]): Promise<MessageResult> {
     this.ensureReady();
-    const options = this.withEphemeral(chatId);
+    const engineJid = this.sessionStore.toEngineJid(chatId);
+    const options = this.withEphemeral(engineJid);
     const content = { text, ...this.withMentions(mentions) };
     const sent = options
-      ? await this.sock!.sendMessage(chatId, content, options)
-      : await this.sock!.sendMessage(chatId, content);
+      ? await this.sock!.sendMessage(engineJid, content, options)
+      : await this.sock!.sendMessage(engineJid, content);
     if (sent) {
       void this.config.messageStore?.put(this.config.sessionId, sent).catch(err =>
         this.logger.warn('Failed to persist sent message to store', {
@@ -510,7 +512,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
     this.ensureReady();
     const presence = state === 'typing' ? 'composing' : state === 'recording' ? 'recording' : 'paused';
     try {
-      await this.sock!.sendPresenceUpdate(presence, chatId);
+      await this.sock!.sendPresenceUpdate(presence, this.sessionStore.toEngineJid(chatId));
     } catch (error) {
       // Presence is best-effort — a failure here must never surface as a 500 on the direct typing
       // endpoint or MCP tool (mirrors the whatsapp-web.js adapter; #583 R4). A migrated contact can
@@ -612,7 +614,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
   async reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void> {
     this.ensureReady();
     const target = await this.requireStored(messageId);
-    await this.sock!.sendMessage(chatId, { react: { text: emoji, key: target.key } });
+    await this.sock!.sendMessage(this.sessionStore.toEngineJid(chatId), { react: { text: emoji, key: target.key } });
   }
 
   async deleteMessage(chatId: string, messageId: string, forEveryone = true): Promise<void> {
@@ -622,7 +624,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
       throw new EngineNotSupportedError('deleteMessage (delete-for-me)');
     }
     const target = await this.requireStored(messageId);
-    await this.sock!.sendMessage(chatId, { delete: target.key });
+    await this.sock!.sendMessage(this.sessionStore.toEngineJid(chatId), { delete: target.key });
   }
 
   // ----- Groups -----
@@ -768,26 +770,65 @@ export class BaileysAdapter implements IWhatsAppEngine {
     return this.sessionStore.listChats();
   }
 
-  async sendSeen(chatId: string): Promise<boolean> {
+  async sendSeen(chatId: string, messageKey?: { id: string, fromMe: boolean, participant?: string }): Promise<boolean> {
     this.ensureReady();
-    const last = this.sessionStore.lastMessage(chatId);
-    if (!last) {
+    let key: WAMessageKey | undefined;
+
+    if (messageKey) {
+      key = {
+        remoteJid: this.sessionStore.toEngineJid(chatId),
+        id: messageKey.id,
+        fromMe: messageKey.fromMe,
+        participant: messageKey.participant || undefined,
+      };
+    } else {
+      const last = this.sessionStore.lastIncomingMessage(chatId) ?? this.sessionStore.lastMessage(chatId);
+      key = last?.key;
+    }
+
+    if (!key) {
+      this.logger.warn(`Cannot sendSeen for ${chatId}: no last message available.`);
       return false; // nothing known to mark read
     }
-    await this.sock!.readMessages([last.key]);
+    try {
+      this.logger.log(`Marking chat ${chatId} as read using message key ${key.id} (fromMe: ${key.fromMe})`);
+      await this.sock!.readMessages([key]);
+    } catch (err) {
+      this.logger.error(`Error in readMessages for ${chatId}:`, err);
+    }
+    
+    // Always clear the local unread count so UI updates immediately
+    this.sessionStore.clearUnreadCount(chatId);
     return true;
   }
 
-  async markUnread(chatId: string): Promise<boolean> {
+  async markUnread(chatId: string, messageKey?: { id: string, fromMe: boolean, participant?: string }): Promise<boolean> {
     this.ensureReady();
-    const last = this.sessionStore.lastMessage(chatId);
-    if (!last) {
+    let key: WAMessageKey | undefined;
+
+    if (messageKey) {
+      key = {
+        remoteJid: this.sessionStore.toEngineJid(chatId),
+        id: messageKey.id,
+        fromMe: messageKey.fromMe,
+        participant: messageKey.participant || undefined,
+      };
+    } else {
+      const last = this.sessionStore.lastIncomingMessage(chatId) ?? this.sessionStore.lastMessage(chatId);
+      key = last?.key;
+    }
+
+    if (!key) {
+      this.logger.warn(`Cannot markUnread for ${chatId}: no last message available.`);
       return false; // Baileys' unread toggle needs the last message; can't synthesize it
     }
-    await this.sock!.chatModify(
-      { markRead: false, lastMessages: [{ key: last.key, messageTimestamp: last.timestamp }] },
-      chatId,
-    );
+
+    try {
+      this.logger.log(`Marking chat ${chatId} as unread using message key ${key.id}`);
+      await this.sock!.chatModify({ markRead: false, lastMessages: [{ key, messageTimestamp: Date.now() / 1000 }] as any }, chatId);
+    } catch (err) {
+      this.logger.error(`Error in markUnread for ${chatId}:`, err);
+    }
     return true;
   }
 
@@ -1417,10 +1458,11 @@ export class BaileysAdapter implements IWhatsAppEngine {
     content: AnyMessageContent,
     options?: MiscMessageGenerationOptions,
   ): Promise<MessageResult> {
-    const merged = this.withEphemeral(chatId, options);
+    const engineJid = this.sessionStore.toEngineJid(chatId);
+    const merged = this.withEphemeral(engineJid, options);
     const sent = merged
-      ? await this.sock!.sendMessage(chatId, content, merged)
-      : await this.sock!.sendMessage(chatId, content);
+      ? await this.sock!.sendMessage(engineJid, content, merged)
+      : await this.sock!.sendMessage(engineJid, content);
     if (sent) {
       void this.config.messageStore?.put(this.config.sessionId, sent).catch(err =>
         this.logger.warn('Failed to persist sent message to store', {

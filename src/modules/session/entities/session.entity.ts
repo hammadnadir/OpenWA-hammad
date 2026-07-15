@@ -1,6 +1,6 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, Column, CreateDateColumn, UpdateDateColumn, ObjectId } from 'typeorm';
 import { DateTransformer } from '../../../common/transformers/date.transformer';
-import { jsonColumnType, dateColumnType } from '../../../common/utils/column-types';
+import { jsonColumnType, dateColumnType, IdDecorator, MongoObjectIdColumn } from '../../../common/utils/column-types';
 
 export enum SessionStatus {
   CREATED = 'created',
@@ -14,7 +14,10 @@ export enum SessionStatus {
 
 @Entity('sessions')
 export class Session {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   @Column({ type: 'varchar', length: 100, unique: true })

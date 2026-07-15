@@ -1,4 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 'typeorm';
+import { Entity, Column, CreateDateColumn, Index, ObjectId } from 'typeorm';
+import { IdDecorator, MongoObjectIdColumn } from '../../../common/utils/column-types';
 
 /**
  * A durable record of a webhook delivery that exhausted all of its retries. The queued path (BullMQ)
@@ -12,7 +13,10 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 
 @Entity('webhook_delivery_failures')
 @Index('IDX_webhook_delivery_failures_sessionId', ['sessionId'])
 export class WebhookDeliveryFailure {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   @Column()

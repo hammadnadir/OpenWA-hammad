@@ -85,7 +85,8 @@
       "callVideo": "Video call",
       "callVideoMissed": "Missed video call",
       "omitted": "Media",
-      "image": "Image"
+      "image": "Image",
+      "voiceNote": "Voice note"
     },
     "subtitle": "Send and reply to WhatsApp messages in real time",
     "noSessionsTitle": "No connected sessions",
@@ -114,6 +115,10 @@
     "messagePlaceholder": "Type a message...",
     "noPermission": "You do not have permission to send messages",
     "send": "Send",
+    "recording": "Recording...",
+    "cancelRecording": "Cancel",
+    "sendVoiceNote": "Send voice note",
+    "recordVoice": "Record voice note",
     "placeholderTitle": "Start messaging",
     "placeholderDesc": "Choose a conversation to read and reply.",
     "deleteConfirm": "Delete this message for everyone?",

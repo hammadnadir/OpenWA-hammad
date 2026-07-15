@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { SessionService } from '../session/session.service';
 import { SendTextMessageDto, SendMediaMessageDto, SendAudioMessageDto, MessageResponseDto } from './dto';
 import { SendTemplateMessageDto } from './dto/send-template.dto';
@@ -16,6 +16,13 @@ import { SsrfBlockedError, SSRF_BLOCKED_CLIENT_MESSAGE } from '../../common/secu
 import { userPart } from '../../engine/identity/wa-id';
 import { resolveFeatureFlags } from '../../config/feature-flags';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
+import { put } from '@vercel/blob';
+
+// Skip lines to getMessages definition (this is contiguous so it is fine to replace the top imports and getMessages together)
+// Wait! Let's not make it non-contiguous if we can do one contiguous block, or we can use two replacement chunks but multi_replace isn't needed if we are careful. Wait! The instruction says: "Use this tool ONLY when you are making a SINGLE CONTIGUOUS block of edits... If you are making edits to multiple non-adjacent lines, use the multi_replace_file_content tool instead."
+// So replacing from imports to getMessages would mean replacing the whole 296 lines which is a bit large, but we can do it! Or we can use multi_replace_file_content with two chunks.
+// Let's use multi_replace_file_content with two chunks: one for the imports, one for the getMessages function! That is exactly what multi_replace_file_content is for!
+// Wait! Let's double check imports first. Can we just use `multi_replace_file_content`? Yes! Let's do that!
 
 export interface GetMessagesOptions {
   chatId?: string;
@@ -206,7 +213,7 @@ export class MessageService {
     // wire message and the persisted record agree. Resolved BEFORE buildMediaInput so its base64
     // mimetype guard sees the effective type. buildMediaInput itself stays generic (shared by all media).
     const audioDto =
-      finalDto.ptt && !finalDto.mimetype ? { ...finalDto, mimetype: 'audio/ogg; codecs=opus' } : finalDto;
+      finalDto.ptt ? { ...finalDto, mimetype: finalDto.mimetype || 'audio/ogg; codecs=opus' } : finalDto;
     const media = this.buildMediaInput(audioDto);
     media.ptt = finalDto.ptt;
 
@@ -269,28 +276,30 @@ export class MessageService {
       typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 100) : 50;
     const offset = typeof rawOffset === 'number' && Number.isFinite(rawOffset) ? Math.max(Math.trunc(rawOffset), 0) : 0;
 
-    const query = this.messageRepository
-      .createQueryBuilder('message')
-      .where('message.sessionId = :sessionId', { sessionId })
-      .orderBy('message.createdAt', 'DESC')
-      .skip(offset)
-      .take(limit);
+    const where: any = { sessionId };
 
     if (chatId) {
       // Match across dialects: a stored chatId may be `@s.whatsapp.net` (e.g. an outbound send addressed
       // by a raw engine id) while the caller filters by the neutral `@c.us` from the chat list - same
       // chat, different dialect. Resolving both sides through the table keeps them equal.
-      query.andWhere('message.chatId IN (:...chatIds)', { chatIds: this.resolveJidCandidates(chatId) });
+      const candidates = this.resolveJidCandidates(chatId);
+      where.chatId = this.messageRepository.manager.connection.options.type === 'mongodb' ? { $in: candidates } : In(candidates);
     }
 
     if (from) {
       // Resolve the filter through the lid->phone table so a phone matches not just the stored
       // `<phone>@c.us` id but also any lid that resolves to the same person - turning the prior
       // silent miss (a lid-stored author vs a phone filter) into a hit.
-      query.andWhere('message.from IN (:...froms)', { froms: this.resolveJidCandidates(from) });
+      const candidates = this.resolveJidCandidates(from);
+      where.from = this.messageRepository.manager.connection.options.type === 'mongodb' ? { $in: candidates } : In(candidates);
     }
 
-    const [messages, total] = await query.getManyAndCount();
+    const [messages, total] = await this.messageRepository.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip: offset,
+      take: limit,
+    });
     return { messages, total };
   }
 
@@ -507,6 +516,30 @@ export class MessageService {
     },
   ): Promise<Message> {
     const session = await this.sessionService.findOne(sessionId);
+
+    // Intercept outgoing media and upload to Vercel Blob
+    const media = data.metadata?.media as { mimetype: string; filename?: string; data?: string } | undefined;
+    if (media && media.data) {
+      const token = process.env.BLOB_READ_WRITE_TOKEN;
+      if (token) {
+        if (!media.data.startsWith('http://') && !media.data.startsWith('https://') && !media.data.startsWith('data:')) {
+          try {
+            const fileBuffer = Buffer.from(media.data, 'base64');
+            const filename = media.filename || `media-${Date.now()}`;
+            const blob = await put(filename, fileBuffer, {
+              access: 'public',
+              contentType: media.mimetype,
+              token: token,
+              addRandomSuffix: true,
+            });
+            media.data = blob.url;
+          } catch (uploadError) {
+            this.logger.error('Failed to upload outgoing media to Vercel Blob', String(uploadError));
+          }
+        }
+      }
+    }
+
     const message = this.messageRepository.create({
       sessionId,
       waMessageId: data.waMessageId,

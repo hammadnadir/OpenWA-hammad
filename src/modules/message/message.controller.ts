@@ -1,4 +1,6 @@
-import { Controller, Post, Get, Param, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Query, HttpCode, HttpStatus, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { put } from '@vercel/blob';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { MessageService } from './message.service';
 import { BulkMessageService } from './bulk-message.service';
@@ -96,7 +98,8 @@ export class MessageController {
 
   @Post('send-image')
   @RequireRole(ApiKeyRole.OPERATOR)
-  @ApiOperation({ summary: 'Send an image message' })
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Send an image message (supports base64, url, or multipart file upload)' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({
     status: 201,
@@ -110,13 +113,18 @@ export class MessageController {
   async sendImage(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
+    @UploadedFile() file?: Express.Multer.File,
   ): Promise<MessageResponseDto> {
+    if (file) {
+      await this.handleFileUpload(dto, file);
+    }
     return this.messageService.sendImage(sessionId, dto);
   }
 
   @Post('send-video')
   @RequireRole(ApiKeyRole.OPERATOR)
-  @ApiOperation({ summary: 'Send a video message' })
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Send a video message (supports base64, url, or multipart file upload)' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({
     status: 201,
@@ -130,13 +138,18 @@ export class MessageController {
   async sendVideo(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
+    @UploadedFile() file?: Express.Multer.File,
   ): Promise<MessageResponseDto> {
+    if (file) {
+      await this.handleFileUpload(dto, file);
+    }
     return this.messageService.sendVideo(sessionId, dto);
   }
 
   @Post('send-audio')
   @RequireRole(ApiKeyRole.OPERATOR)
-  @ApiOperation({ summary: 'Send an audio/voice message' })
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Send an audio/voice message (supports base64, url, or multipart file upload)' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({
     status: 201,
@@ -150,13 +163,29 @@ export class MessageController {
   async sendAudio(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendAudioMessageDto,
+    @UploadedFile() file?: Express.Multer.File,
   ): Promise<MessageResponseDto> {
+    if (file) {
+      if (String(dto.ptt) === 'true' && file.mimetype.includes('webm')) {
+        try {
+          const { transcodeToOggOpus } = await import('../../utils/audio-converter.js');
+          file.buffer = await transcodeToOggOpus(file.buffer);
+          file.mimetype = 'audio/ogg; codecs=opus';
+          file.originalname = 'voice_note.ogg';
+        } catch (err) {
+          // Fallback to original buffer if transcoding fails
+          console.error('Failed to transcode audio:', err);
+        }
+      }
+      await this.handleFileUpload(dto, file);
+    }
     return this.messageService.sendAudio(sessionId, dto);
   }
 
   @Post('send-document')
   @RequireRole(ApiKeyRole.OPERATOR)
-  @ApiOperation({ summary: 'Send a document/file' })
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Send a document/file (supports base64, url, or multipart file upload)' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({
     status: 201,
@@ -170,8 +199,41 @@ export class MessageController {
   async sendDocument(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendMediaMessageDto,
+    @UploadedFile() file?: Express.Multer.File,
   ): Promise<MessageResponseDto> {
+    if (file) {
+      await this.handleFileUpload(dto, file);
+    }
     return this.messageService.sendDocument(sessionId, dto);
+  }
+
+  private async handleFileUpload(dto: any, file: Express.Multer.File): Promise<void> {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token) {
+      try {
+        const filename = file.originalname || `media-${Date.now()}`;
+        const blob = await put(filename, file.buffer, {
+          access: 'public',
+          contentType: file.mimetype,
+          token: token,
+          addRandomSuffix: true,
+        });
+        dto.url = blob.url;
+        dto.mimetype = file.mimetype;
+        dto.filename = filename;
+        delete dto.base64;
+      } catch (error) {
+        dto.base64 = file.buffer.toString('base64');
+        dto.mimetype = file.mimetype;
+        dto.filename = file.originalname;
+        delete dto.url;
+      }
+    } else {
+      dto.base64 = file.buffer.toString('base64');
+      dto.mimetype = file.mimetype;
+      dto.filename = file.originalname;
+      delete dto.url;
+    }
   }
 
   // ========== Phase 3: Extended Messaging ==========

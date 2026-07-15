@@ -1,4 +1,5 @@
 import type { Chat, Contact as BaileysContact, WAMessage, WAMessageKey } from '@whiskeysockets/baileys';
+import * as fs from 'fs';
 import { ChatSummary, Contact } from '../interfaces/whatsapp-engine.interface';
 import { parseWaId, toNeutralJid as canonicalizeWaId, userPart } from '../identity/wa-id';
 import type { LidMappingStore } from '../identity/lid-mapping-store.service';
@@ -31,6 +32,7 @@ export class BaileysSessionStore {
   private readonly contacts = new Map<string, BaileysContactWithPhone>();
   private readonly chats = new Map<string, Chat>();
   private readonly lastMessages = new Map<string, LastMessage>();
+  private readonly lastIncomingMessages = new Map<string, LastMessage>();
   private readonly lidToPn = new Map<string, string>();
   /**
    * Per-chat disappearing-messages timer (seconds) learned from inbound messages (#473), the reliable
@@ -50,7 +52,29 @@ export class BaileysSessionStore {
   constructor(
     private readonly lidStore?: LidMappingStore,
     private readonly sessionId?: string,
-  ) {}
+    private readonly storePath?: string,
+  ) {
+    if (this.storePath && fs.existsSync(this.storePath)) {
+      try {
+        this.fromJSON(fs.readFileSync(this.storePath, 'utf-8'));
+      } catch (e) {
+        // Ignore read errors
+      }
+    }
+  }
+
+  private saveTimer: NodeJS.Timeout | null = null;
+  private saveStore(): void {
+    if (!this.storePath) return;
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      try {
+        fs.writeFileSync(this.storePath!, this.toJSON());
+      } catch (e) {
+        // ignore
+      }
+    }, 2000);
+  }
 
   upsertContacts(records: Partial<BaileysContactWithPhone>[] = []): void {
     for (const r of records) {
@@ -71,14 +95,52 @@ export class BaileysSessionStore {
     }
   }
 
+  private readonly locallyReadAt = new Map<string, number>();
+
+  toJSON(): string {
+    return JSON.stringify({
+      contacts: Array.from(this.contacts.entries()),
+      chats: Array.from(this.chats.entries()),
+      lastMessages: Array.from(this.lastMessages.entries()),
+      lastIncomingMessages: Array.from(this.lastIncomingMessages.entries()),
+      locallyReadAt: Array.from(this.locallyReadAt.entries()),
+      lidMappings: Array.from(this.lidToPn.entries()),
+    });
+  }
+
+  fromJSON(data: string): void {
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.contacts) { this.contacts.clear(); parsed.contacts.forEach((v: any) => this.contacts.set(v[0], v[1])); }
+      if (parsed.chats) { this.chats.clear(); parsed.chats.forEach((v: any) => this.chats.set(v[0], v[1])); }
+      if (parsed.lastMessages) { this.lastMessages.clear(); parsed.lastMessages.forEach((v: any) => this.lastMessages.set(v[0], v[1])); }
+      if (parsed.lastIncomingMessages) { this.lastIncomingMessages.clear(); parsed.lastIncomingMessages.forEach((v: any) => this.lastIncomingMessages.set(v[0], v[1])); }
+      if (parsed.locallyReadAt) { this.locallyReadAt.clear(); parsed.locallyReadAt.forEach((v: any) => this.locallyReadAt.set(v[0], v[1])); }
+      if (parsed.lidMappings) { this.lidToPn.clear(); parsed.lidMappings.forEach((v: any) => this.lidToPn.set(v[0], v[1])); }
+    } catch (e) {
+      // Ignore parse errors
+    }
+  }
+
   upsertChats(records: Partial<Chat>[] = []): void {
     for (const r of records) {
       if (!r.id) {
         continue;
       }
       const existing = this.chats.get(r.id) ?? { id: r.id };
-      this.chats.set(r.id, { ...existing, ...r });
+      const merged = { ...existing, ...r };
+
+      // Prevent Baileys from reverting unreadCount to > 0 if we locally read it,
+      // UNLESS a new message has arrived since we read it.
+      const readAt = this.locallyReadAt.get(this.toNeutralJid(merged.id));
+      if (readAt && merged.conversationTimestamp) {
+        if (Number(merged.conversationTimestamp) <= readAt) {
+          merged.unreadCount = 0;
+        }
+      }
+      this.chats.set(r.id, merged);
     }
+    this.saveStore();
   }
 
   addLidMappings(mappings: { lid?: string; pn?: string }[] = []): void {
@@ -88,6 +150,7 @@ export class BaileysSessionStore {
         this.persistLidMapping(m.lid, m.pn);
       }
     }
+    this.saveStore();
   }
 
   /**
@@ -126,6 +189,13 @@ export class BaileysSessionStore {
     }
     const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? '';
     this.lastMessages.set(chatId, { key: msg.key, timestamp, text });
+    if (!msg.key.fromMe) {
+      const existingIncoming = this.lastIncomingMessages.get(chatId);
+      if (!existingIncoming || existingIncoming.timestamp <= timestamp) {
+        this.lastIncomingMessages.set(chatId, { key: msg.key, timestamp, text });
+      }
+    }
+    this.saveStore();
   }
 
   /**
@@ -192,11 +262,53 @@ export class BaileysSessionStore {
   }
 
   listChats(): ChatSummary[] {
-    return [...this.chats.values()].map(c => this.toNeutralChat(c));
+    const unique = new Map<string, ChatSummary>();
+    for (const c of this.chats.values()) {
+      if (c.id === 'status@broadcast') continue;
+      const neutral = this.toNeutralChat(c);
+      const existing = unique.get(neutral.id);
+      
+      if (existing) {
+        // Merge duplicates: keep the most recent timestamp and message
+        if (neutral.timestamp > existing.timestamp) {
+          existing.timestamp = neutral.timestamp;
+          existing.lastMessage = neutral.lastMessage;
+        }
+        // Prefer the longer/better name if one is a raw number
+        const isNeutralRaw = neutral.name === neutral.id.split('@')[0];
+        const isExistingRaw = existing.name === existing.id.split('@')[0];
+        if (neutral.name && !isNeutralRaw && (isExistingRaw || neutral.name.length > (existing.name?.length || 0))) {
+          existing.name = neutral.name;
+        }
+        existing.unreadCount = Math.max(existing.unreadCount, neutral.unreadCount);
+      } else {
+        unique.set(neutral.id, neutral);
+      }
+    }
+    return [...unique.values()];
+  }
+
+  clearUnreadCount(chatId: string): void {
+    const neutralId = this.toNeutralJid(chatId);
+    this.locallyReadAt.set(neutralId, Math.floor(Date.now() / 1000));
+    
+    // Find all internal chat objects that map to this neutral ID and clear their unread counts
+    for (const [id, chat] of this.chats.entries()) {
+      if (this.toNeutralJid(id) === neutralId) {
+        chat.unreadCount = 0;
+        this.chats.set(id, chat);
+      }
+    }
+    this.saveStore();
   }
 
   lastMessage(chatId: string): { key: WAMessageKey; timestamp: number } | null {
     const m = this.lastMessages.get(chatId) ?? this.lastMessages.get(this.toEngineJid(chatId));
+    return m ? { key: m.key, timestamp: m.timestamp } : null;
+  }
+
+  lastIncomingMessage(chatId: string): { key: WAMessageKey; timestamp: number } | null {
+    const m = this.lastIncomingMessages.get(chatId) ?? this.lastIncomingMessages.get(this.toEngineJid(chatId));
     return m ? { key: m.key, timestamp: m.timestamp } : null;
   }
 

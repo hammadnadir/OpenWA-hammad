@@ -1,4 +1,5 @@
-import { Column, Entity, Index, PrimaryColumn, UpdateDateColumn } from 'typeorm';
+import { Column, Entity, Index, UpdateDateColumn, ObjectId } from 'typeorm';
+import { PrimaryColumnDecorator, MongoObjectIdColumn } from '../../common/utils/column-types';
 
 /**
  * Persisted `lid -> phone` resolution table on the `data` connection. One global, cross-session row per
@@ -14,8 +15,11 @@ import { Column, Entity, Index, PrimaryColumn, UpdateDateColumn } from 'typeorm'
 @Entity('lid_mappings')
 @Index(['phone']) // reverse lookup: phone -> lids, for the message from-filter
 export class LidMapping {
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
   /** The lid number (bare, device-stripped - the user-part of `<lid>@lid`). */
-  @PrimaryColumn()
+  @PrimaryColumnDecorator
   lid: string;
 
   /** E.164 phone digits, or null when the lid is known-but-unresolved (a cached negative result). */

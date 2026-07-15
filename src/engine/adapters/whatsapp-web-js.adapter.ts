@@ -1787,7 +1787,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     return summaries;
   }
 
-  async sendSeen(chatId: string): Promise<boolean> {
+  async sendSeen(chatId: string, messageKey?: { id: string, fromMe: boolean, participant?: string }): Promise<boolean> {
     this.ensureReady();
     try {
       const chat = await this.client!.getChatById(chatId);
@@ -1798,7 +1798,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     }
   }
 
-  async markUnread(chatId: string): Promise<boolean> {
+  async markUnread(chatId: string, messageKey?: { id: string, fromMe: boolean, participant?: string }): Promise<boolean> {
     this.ensureReady();
     if (isChannelJid(chatId)) {
       // A channel resolves to a wwebjs `Channel`, which has no markUnread() — there is no unread

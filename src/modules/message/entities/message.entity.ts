@@ -1,5 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index, ValueTransformer } from 'typeorm';
-import { jsonColumnType } from '../../../common/utils/column-types';
+import { Entity, Column, CreateDateColumn, Index, ValueTransformer, ObjectId } from 'typeorm';
+import { jsonColumnType, IdDecorator, MongoObjectIdColumn, BodyIndex } from '../../../common/utils/column-types';
 
 /**
  * A `bigint` column reads back as a string on PostgreSQL (pg avoids >2^53 precision loss) but as a
@@ -38,7 +38,10 @@ export enum MessageStatus {
 // Without it every ack does a full table scan of a hot table.
 @Index('UQ_messages_sessionId_waMessageId', ['sessionId', 'waMessageId'], { unique: true })
 export class Message {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   // No standalone @Index here: sessionId-only lookups are already served by the composite indexes
@@ -59,9 +62,14 @@ export class Message {
   @Column()
   from: string;
 
+  /** Group message sender JID (participant). Null for 1:1 chats. */
+  @Column({ nullable: true })
+  author?: string;
+
   @Column()
   to: string;
 
+  @BodyIndex
   @Column({ type: 'text', nullable: true })
   body: string;
 

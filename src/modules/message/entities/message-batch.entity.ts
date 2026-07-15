@@ -1,6 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Unique } from 'typeorm';
+import { Entity, Column, CreateDateColumn, UpdateDateColumn, Unique, ObjectId } from 'typeorm';
 import { DateTransformer } from '../../../common/transformers/date.transformer';
-import { jsonColumnType, dateColumnType } from '../../../common/utils/column-types';
+import { jsonColumnType, dateColumnType, IdDecorator, MongoObjectIdColumn } from '../../../common/utils/column-types';
 
 export enum BatchStatus {
   PENDING = 'pending',
@@ -41,7 +41,10 @@ export interface BatchProgress {
 // Migration 1781800000000 carries the same constraint on existing databases.
 @Unique('UQ_message_batches_session_id_batch_id', ['sessionId', 'batchId'])
 export class MessageBatch {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   @Column({ name: 'batch_id' })

@@ -2,20 +2,23 @@ import {
   Entity,
   Column,
   Index,
-  PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
+  ObjectId,
 } from 'typeorm';
 import { Session } from '../../session/entities/session.entity';
 import { DateTransformer } from '../../../common/transformers/date.transformer';
-import { jsonColumnType, dateColumnType } from '../../../common/utils/column-types';
+import { jsonColumnType, dateColumnType, IdDecorator, MongoObjectIdColumn } from '../../../common/utils/column-types';
 import { WebhookFilters } from '../filters/filter-types';
 
 @Entity('webhooks')
 export class Webhook {
-  @PrimaryGeneratedColumn('uuid')
+  @MongoObjectIdColumn
+  _id: ObjectId;
+
+  @IdDecorator
   id: string;
 
   // varchar (not uuid) to match the authoritative migration DDL and sessions.id; the data connection

@@ -114,11 +114,21 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
       return; // under the cap — nothing to evict
     }
     const { id, createdAt } = cutoff[0];
-    await this.repo
-      .createQueryBuilder()
-      .delete()
-      .where('sessionId = :sessionId', { sessionId })
-      .andWhere('(createdAt < :createdAt OR (createdAt = :createdAt AND id <= :id))', { createdAt, id })
-      .execute();
+    if (this.repo.metadata.connection.options.type === 'mongodb') {
+      await this.repo.delete({
+        sessionId,
+        $or: [
+          { createdAt: { $lt: createdAt } },
+          { createdAt: { $eq: createdAt }, id: { $lte: id } },
+        ],
+      } as any);
+    } else {
+      await this.repo
+        .createQueryBuilder()
+        .delete()
+        .where('sessionId = :sessionId', { sessionId })
+        .andWhere('(createdAt < :createdAt OR (createdAt = :createdAt AND id <= :id))', { createdAt, id })
+        .execute();
+    }
   }
 }

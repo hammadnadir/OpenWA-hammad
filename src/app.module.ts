@@ -7,6 +7,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
 import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
+import { MongoUuidSubscriber } from './database/mongo-uuid.subscriber';
 import { SessionModule } from './modules/session/session.module';
 import { MessageModule } from './modules/message/message.module';
 import { TemplateModule } from './modules/template/template.module';
@@ -134,7 +135,7 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const dbType = configService.get<'sqlite' | 'postgres'>('dataDatabase.type', 'sqlite');
+        const dbType = configService.get<'sqlite' | 'postgres' | 'mongodb'>('dataDatabase.type', 'sqlite');
         const baseConfig = {
           entities: [
             __dirname + '/modules/session/**/*.entity{.ts,.js}',
@@ -147,6 +148,18 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
           migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
           logging: configService.get<boolean>('dataDatabase.logging', false),
         };
+
+        if (dbType === 'mongodb') {
+          return {
+            ...baseConfig,
+            name: 'data',
+            type: 'mongodb' as const,
+            url: configService.get<string>('dataDatabase.url'),
+            synchronize: true, // auto index/schema sync
+            migrationsRun: false,
+            subscribers: [MongoUuidSubscriber],
+          } as any;
+        }
 
         if (dbType === 'postgres') {
           // Schema selection: 'public' (default) is a no-op vs the historical behavior. A non-public

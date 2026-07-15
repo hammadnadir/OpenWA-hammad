@@ -15,6 +15,7 @@ import {
   X,
   CornerUpLeft,
   Trash2,
+  Mic,
 } from 'lucide-react';
 import {
   sessionApi,
@@ -36,6 +37,7 @@ import {
   messagesQueryKey,
 } from '../hooks/useChatMessages';
 import { useChatScrollPosition } from '../hooks/useChatScrollPosition';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import MessageBody from '../components/chats/MessageBody';
 import MediaLightbox, { type LightboxItem } from '../components/chats/MediaLightbox';
 import './Chats.css';
@@ -54,6 +56,7 @@ interface IncomingWsMessage {
   type: string;
   timestamp: number;
   fromMe?: boolean;
+  author?: string;
   media?: MessageMedia;
   quotedMessage?: { id: string; body: string };
   // The backend emits `call` as a top-level field on the live `message.received` event (it's only
@@ -123,6 +126,9 @@ export function Chats() {
   // References
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [replyingTo, setReplyingTo] = useState<ChatMessageView | null>(null);
+
+  // Voice recording
+  const { state: recorderState, elapsed: recorderElapsed, startRecording, stopRecording, cancelRecording } = useVoiceRecorder();
 
   // Per-chat scroll-position memory + auto-scroll heuristic.
   // Pass `messages.length > 0` as the loaded signal: it stays stable once the
@@ -217,6 +223,7 @@ export function Chats() {
         body: newMsg.body,
         type: asMessageType(newMsg.type),
         direction: newMsg.fromMe ? 'outgoing' : 'incoming',
+        author: newMsg.author,
         status: 'sent',
         timestamp: newMsg.timestamp,
         createdAt: new Date(newMsg.timestamp * 1000).toISOString(),
@@ -327,25 +334,12 @@ export function Chats() {
   );
 
   const handleIncomingMessageRevoked = useCallback(
-    (event: { sessionId: string; id: string; type: string }) => {
-      if (event.sessionId !== selectedSessionId) return;
-
-      // Walk every cached chat under this session, find the message by id or waMessageId and zero it
-      // — the backend emits an empty body; the localized "deleted" label is rendered below.
-      const caches = queryClient.getQueriesData<ChatMessageView[]>({
-        queryKey: ['messages', event.sessionId],
-      });
-      for (const [key, list] of caches) {
-        if (!list) continue;
-        const idx = list.findIndex(m => m.id === event.id || m.waMessageId === event.id);
-        if (idx === -1) continue;
-        const target = list[idx];
-        const next = list.slice();
-        next[idx] = { ...target, body: '', type: asMessageType(event.type) };
-        queryClient.setQueryData(key, next);
-      }
+    // CRM policy: ignore "delete for everyone" — keep the original message visible.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    (_event: { sessionId: string; id: string; type: string }) => {
+      // No-op: messages are preserved in the CRM even when revoked on WhatsApp.
     },
-    [selectedSessionId, queryClient],
+    [],
   );
 
   const { isConnected, connectionFailed, reconnect, subscribe, unsubscribe } = useWebSocket({
@@ -485,6 +479,68 @@ export function Chats() {
     setShowEmojiPicker(false);
   };
 
+  // 6b. Handle sending a voice note
+  const handleSendVoiceNote = async () => {
+    if (!selectedSessionId || !activeChat || recorderState !== 'recording') return;
+
+    const blob = await stopRecording();
+    if (!blob) return;
+
+    setSending(true);
+
+    const tempId = `temp_voice_${Date.now()}`;
+    const tempMessage: ChatMessageView = {
+      id: tempId,
+      chatId: activeChat.id,
+      from: 'me',
+      to: activeChat.id,
+      body: '',
+      type: 'voice',
+      direction: 'outgoing',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+
+    appendMessage(selectedSessionId, activeChat.id, tempMessage);
+    onMessageAppended('outgoing');
+
+    try {
+      const result = await messageApi.sendVoiceNote(selectedSessionId, activeChat.id, blob);
+
+      const sendKey = messagesQueryKey(selectedSessionId, activeChat.id);
+      queryClient.setQueryData<ChatMessageView[]>(sendKey, (prev = []) => {
+        const echoAlreadyAdded = prev.some(
+          m => m.id === result.messageId || m.waMessageId === result.messageId,
+        );
+        if (echoAlreadyAdded) {
+          return prev.filter(m => m.id !== tempId);
+        }
+        return prev.map(m =>
+          m.id === tempId
+            ? { ...m, id: result.messageId, waMessageId: result.messageId, status: 'sent' }
+            : m,
+        );
+      });
+
+      setChats(prevChats => {
+        const chatIndex = prevChats.findIndex(c => c.id === activeChat.id);
+        if (chatIndex === -1) return prevChats;
+        const updatedChats = [...prevChats];
+        const target = { ...updatedChats[chatIndex] };
+        target.lastMessage = `🎤 ${t('chats.media.voiceNote')}`;
+        target.timestamp = Math.floor(Date.now() / 1000);
+        updatedChats.splice(chatIndex, 1);
+        updatedChats.unshift(target);
+        return updatedChats;
+      });
+    } catch (err) {
+      showErrorToast(t('chats.errors.send'), err instanceof Error ? err.message : undefined);
+      updateMessage(selectedSessionId, activeChat.id, tempId, { status: 'failed' });
+    } finally {
+      setSending(false);
+    }
+  };
+
   // 7. Handle sending a message / media
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -550,7 +606,7 @@ export function Chats() {
         else if (mime.startsWith('audio/')) mediaType = 'audio';
 
         result = await messageApi.sendMedia(selectedSessionId, activeChat.id, mediaType, {
-          base64: currentAttachment.base64,
+          file: currentAttachment.file,
           mimetype: currentAttachment.mimetype,
           filename: currentAttachment.filename,
           caption: mediaType !== 'audio' ? textToSend : undefined,
@@ -918,6 +974,13 @@ export function Chats() {
                                 isMediaMessage ? 'media-type' : ''
                               } ${isRevoked ? 'revoked-type' : ''}`}
                             >
+                              {/* Group message author */}
+                              {activeChat?.isGroup && !isMe && msg.author && (
+                                <div className="message-author" style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--wa-teal)', marginBottom: '2px' }}>
+                                  {msg.author.split('@')[0]}
+                                </div>
+                              )}
+
                               {/* Quoted message display */}
                               {msg.metadata?.quotedMessage && (
                                 <div className="message-quote-box">
@@ -1087,52 +1150,94 @@ export function Chats() {
 
                 {/* Message input bar */}
                 <footer className="room-input-footer">
-                  <form onSubmit={handleSend} className="input-form">
-                    <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+                  {recorderState === 'recording' ? (
+                    /* ── Voice Recording Bar ── */
+                    <div className="voice-recording-bar">
+                      <span className="voice-rec-indicator" />
+                      <span className="voice-rec-timer">
+                        {String(Math.floor(recorderElapsed / 60)).padStart(2, '0')}:{String(recorderElapsed % 60).padStart(2, '0')}
+                      </span>
+                      <span className="voice-rec-label">{t('chats.recording', 'Recording...')}</span>
+                      <button
+                        type="button"
+                        className="btn-voice-cancel"
+                        onClick={cancelRecording}
+                        title={t('chats.cancelRecording', 'Cancel')}
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-voice-send"
+                        onClick={handleSendVoiceNote}
+                        title={t('chats.sendVoiceNote', 'Send voice note')}
+                      >
+                        <Send size={18} />
+                      </button>
+                    </div>
+                  ) : (
+                    /* ── Normal Input Bar ── */
+                    <form onSubmit={handleSend} className="input-form">
+                      <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
 
-                    <button
-                      type="button"
-                      onClick={triggerFileSelect}
-                      disabled={!canWrite || sending}
-                      className="btn-input-accessory"
-                      title={t('chats.attachTitle')}
-                    >
-                      <Paperclip size={20} />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={triggerFileSelect}
+                        disabled={!canWrite || sending}
+                        className="btn-input-accessory"
+                        title={t('chats.attachTitle')}
+                      >
+                        <Paperclip size={20} />
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                      disabled={!canWrite || sending}
-                      className={`btn-input-accessory ${showEmojiPicker ? 'active' : ''}`}
-                      title={t('chats.emojiTitle')}
-                    >
-                      <Smile size={20} />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                        disabled={!canWrite || sending}
+                        className={`btn-input-accessory ${showEmojiPicker ? 'active' : ''}`}
+                        title={t('chats.emojiTitle')}
+                      >
+                        <Smile size={20} />
+                      </button>
 
-                    <input
-                      type="text"
-                      placeholder={
-                        canWrite
-                          ? attachment
-                            ? t('chats.captionPlaceholder')
-                            : t('chats.messagePlaceholder')
-                          : t('chats.noPermission')
-                      }
-                      value={messageInput}
-                      onChange={e => setMessageInput(e.target.value)}
-                      disabled={!canWrite || sending}
-                      className="message-text-input"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!canWrite || (!messageInput.trim() && !attachment) || sending}
-                      className="btn-send-message"
-                      aria-label={t('chats.send')}
-                    >
-                      {sending ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
-                    </button>
-                  </form>
+                      <input
+                        type="text"
+                        placeholder={
+                          canWrite
+                            ? attachment
+                              ? t('chats.captionPlaceholder')
+                              : t('chats.messagePlaceholder')
+                            : t('chats.noPermission')
+                        }
+                        value={messageInput}
+                        onChange={e => setMessageInput(e.target.value)}
+                        disabled={!canWrite || sending}
+                        className="message-text-input"
+                      />
+
+                      {/* Show Mic button when input is empty (no text, no attachment), Send button otherwise */}
+                      {!messageInput.trim() && !attachment ? (
+                        <button
+                          type="button"
+                          disabled={!canWrite || sending}
+                          className="btn-send-message btn-mic"
+                          aria-label={t('chats.recordVoice', 'Record voice note')}
+                          onClick={startRecording}
+                        >
+                          {sending ? <Loader2 className="animate-spin" size={18} /> : <Mic size={18} />}
+                        </button>
+                      ) : (
+                        <button
+                          type="submit"
+                          disabled={!canWrite || (!messageInput.trim() && !attachment) || sending}
+                          className="btn-send-message"
+                          aria-label={t('chats.send')}
+                        >
+                          {sending ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
+                        </button>
+                      )}
+                    </form>
+                  )}
                 </footer>
               </div>
             ) : (

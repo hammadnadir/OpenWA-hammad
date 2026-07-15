@@ -2,8 +2,27 @@ import { BadRequestException, Injectable, NotImplementedException } from '@nestj
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import type { MessageType } from '../../../engine/interfaces/whatsapp-engine.interface';
-import { MessageDirection } from '../../message/entities/message.entity';
+import { Message, MessageDirection } from '../../message/entities/message.entity';
 import type { SearchProvider, SearchQuery, SearchResults, SearchHit } from '../search.types';
+
+function generateJsSnippet(body: string, q: string): string {
+  if (!body) return '';
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const lowerBody = body.toLowerCase();
+  // find first match
+  let firstIdx = -1;
+  for (const term of terms) {
+    const idx = lowerBody.indexOf(term);
+    if (idx !== -1) {
+      firstIdx = idx;
+      break;
+    }
+  }
+  if (firstIdx === -1) return body.substring(0, 100);
+  const start = Math.max(0, firstIdx - 50);
+  const end = Math.min(body.length, firstIdx + 150);
+  return (start > 0 ? '... ' : '') + body.substring(start, end).trim() + (end < body.length ? ' ...' : '');
+}
 
 const LIMIT_CAP = Number(process.env.SEARCH_LIMIT_MAX) || 100;
 const MAX_SNIPPET_WORDS = 24;
@@ -59,7 +78,9 @@ export class BuiltInFtsProvider implements SearchProvider {
    */
   private async probeFts(): Promise<boolean> {
     if (this.ftsAvailable !== null) return this.ftsAvailable;
-    if (this.dataSource.options.type === 'postgres') {
+    if (this.dataSource.options.type === 'mongodb') {
+      this.ftsAvailable = true;
+    } else if (this.dataSource.options.type === 'postgres') {
       const rows: unknown[] = await this.dataSource.query(
         `SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='body_ts'`,
       );
@@ -85,6 +106,76 @@ export class BuiltInFtsProvider implements SearchProvider {
   }
 
   async search(query: SearchQuery): Promise<SearchResults> {
+    const isMongo = this.dataSource.options.type === 'mongodb';
+    if (isMongo) {
+      const start = Date.now();
+      const limit = Math.max(1, Math.min(query.limit ?? 50, LIMIT_CAP));
+      const offset = Math.max(0, query.offset ?? 0);
+
+      // Build Mongo Filter
+      const filter: any = {
+        $text: { $search: query.q }
+      };
+
+      if (query.sessionIds && query.sessionIds.length) {
+        filter.sessionId = { $in: query.sessionIds };
+      }
+      if (query.sessionId) {
+        filter.sessionId = query.sessionId;
+      }
+      if (query.chatId) {
+        filter.chatId = query.chatId;
+      }
+      if (query.from) {
+        filter.from = query.from;
+      }
+      if (query.direction) {
+        filter.direction = query.direction;
+      }
+      if (query.type) {
+        const types = Array.isArray(query.type) ? query.type : [query.type];
+        filter.type = { $in: types };
+      }
+      if (query.dateFrom || query.dateTo) {
+        filter.timestamp = {};
+        if (query.dateFrom) {
+          filter.timestamp.$gte = Math.floor(query.dateFrom / 1000);
+        }
+        if (query.dateTo) {
+          filter.timestamp.$lte = Math.floor(query.dateTo / 1000);
+        }
+      }
+
+      const mongoManager = this.dataSource.mongoManager;
+      const rawDocs = await mongoManager
+        .createCursor(Message, filter)
+        .project({ score: { $meta: 'textScore' } })
+        .sort({ score: { $meta: 'textScore' } })
+        .skip(offset)
+        .limit(limit)
+        .toArray();
+
+      const hits: SearchHit[] = rawDocs.map(doc => {
+        const msg = doc as unknown as Message;
+        return {
+          messageId: msg.id,
+          waMessageId: msg.waMessageId || '',
+          sessionId: msg.sessionId,
+          chatId: msg.chatId,
+          body: msg.body || '',
+          snippet: generateJsSnippet(msg.body || '', query.q),
+          timestamp: Number(msg.timestamp || 0),
+          type: msg.type as MessageType,
+          direction: msg.direction as MessageDirection,
+          from: msg.from,
+          score: (doc as any).score,
+        };
+      });
+
+      const total = await mongoManager.count(Message, filter);
+      return { hits, total, tookMs: Date.now() - start, provider: this.id };
+    }
+
     await this.ensureFts();
     const start = Date.now();
     const isPostgres = this.dataSource.options.type === 'postgres';

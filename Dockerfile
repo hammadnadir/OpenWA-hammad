@@ -13,6 +13,8 @@ FROM --platform=$BUILDPLATFORM docker.io/node:22-slim AS builder
 
 WORKDIR /app
 
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -69,6 +71,7 @@ RUN apt-get update && apt-get install -y \
     gosu \
     curl \
     procps \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chrome executable path for Puppeteer
