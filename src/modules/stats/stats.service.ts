@@ -90,7 +90,7 @@ export class StatsService {
 
   /** The data-connection dialect ('sqlite' | 'postgres' | 'mongodb'). */
   private get dataDbType(): string {
-    return this.dataSource.options.type;
+    return this.dataSource?.options?.type ?? 'sqlite';
   }
 
   /** Typed MongoDB entity manager — only valid when dataDbType === 'mongodb'. */
@@ -152,9 +152,12 @@ export class StatsService {
     const todayReceived = parseInt(todayStats.find(m => m.direction === 'incoming')?.count?.toString() || '0');
 
     // Count failed messages
-    const failed = await this.messageRepo.count({
-      where: { status: MessageStatus.FAILED },
-    });
+    const failed =
+      this.dataDbType === 'mongodb'
+        ? await this.mongoManager.count(Message, { status: MessageStatus.FAILED })
+        : await this.messageRepo.count({
+            where: { status: MessageStatus.FAILED },
+          });
 
     // Cache session stats
     await this.cacheService.setSessionsStats({
@@ -354,17 +357,23 @@ export class StatsService {
       }));
     }
 
-    const todayCount = await this.messageRepo.count({
-      where: { sessionId, createdAt: MoreThanOrEqual(todayStart) },
-    });
+    const todayCount =
+      this.dataDbType === 'mongodb'
+        ? await this.mongoManager.count(Message, { sessionId, createdAt: { $gte: todayStart } })
+        : await this.messageRepo.count({
+            where: { sessionId, createdAt: MoreThanOrEqual(todayStart) },
+          });
 
     const sent = parseInt(stats.find(s => s.direction === 'outgoing')?.count?.toString() || '0');
     const received = parseInt(stats.find(s => s.direction === 'incoming')?.count?.toString() || '0');
 
     // Count failed messages for this session
-    const failed = await this.messageRepo.count({
-      where: { sessionId, status: MessageStatus.FAILED },
-    });
+    const failed =
+      this.dataDbType === 'mongodb'
+        ? await this.mongoManager.count(Message, { sessionId, status: MessageStatus.FAILED })
+        : await this.messageRepo.count({
+            where: { sessionId, status: MessageStatus.FAILED },
+          });
 
     // Hourly activity (last 24h)
     const hourlyActivity = await this.getHourlyActivity(sessionId);

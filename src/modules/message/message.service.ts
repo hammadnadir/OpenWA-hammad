@@ -552,6 +552,7 @@ export class MessageService {
       timestamp: data.timestamp,
       status: data.status ?? MessageStatus.PENDING,
       metadata: data.metadata,
+      createdAt: data.timestamp ? new Date(data.timestamp * 1000) : new Date(),
     });
     const saved = await this.messageRepository.save(message);
     // Fire-and-forget: a plugin handler must never break the send path. The built-in FTS search provider

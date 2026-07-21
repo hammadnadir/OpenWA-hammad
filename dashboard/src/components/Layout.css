@@ -37,9 +37,10 @@
 }
 
 .sidebar-logo {
-  width: 28px;
-  height: 28px;
+  width: 48px;
+  height: 48px;
   object-fit: contain;
+  border-radius: 100%;
   flex-shrink: 0;
 }
 
@@ -558,6 +559,7 @@
     from {
       opacity: 0;
     }
+
     to {
       opacity: 1;
     }
@@ -619,6 +621,7 @@
 }
 
 @media (max-width: 768px) {
+
   [dir='rtl'] .main-content,
   [dir='rtl'] .main-content.mobile {
     margin-right: 0;

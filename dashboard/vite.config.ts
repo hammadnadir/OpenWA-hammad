@@ -1,39 +1,122 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Single source of truth for the version shown in the dashboard: read it from
-// package.json at build time so the Login screen always reflects the actual
-// release (bumped via `npm version`), instead of a hard-coded literal that
-// silently drifts. APP_VERSION env still overrides if explicitly provided.
-const { version: pkgVersion } = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf-8')) as {
+// Read version from package.json
+const { version: pkgVersion } = JSON.parse(
+  readFileSync(resolve(process.cwd(), 'package.json'), 'utf-8')
+) as {
   version: string;
 };
 
-// https://vite.dev/config/
+// Detect project root
+const rootDir = existsSync(resolve(process.cwd(), 'key.pem'))
+  ? process.cwd()
+  : resolve(process.cwd(), '..');
+
+const hasCerts =
+  existsSync(resolve(rootDir, 'key.pem')) &&
+  existsSync(resolve(rootDir, 'cert.pem'));
+
+// Load SSL certificates
+const ssl = hasCerts
+  ? {
+      key: readFileSync(resolve(rootDir, 'key.pem')),
+      cert: readFileSync(resolve(rootDir, 'cert.pem')),
+    }
+  : undefined;
+
+
+// Get backend API port from .env
+const getApiPort = () => {
+  try {
+    const envContent = readFileSync(resolve(rootDir, '.env'), 'utf-8');
+
+    const portMatch = envContent.match(/^PORT\s*=\s*(\d+)/m);
+
+    if (portMatch) {
+      return portMatch[1];
+    }
+  } catch {}
+
+  return '2785';
+};
+
+const apiPort = getApiPort();
+
+const apiTarget = `${hasCerts ? 'https' : 'http'}://localhost:${apiPort}`;
+
+
+// Vite Config
 export default defineConfig({
-  plugins: [react()],
-  appType: 'spa', // Enable SPA fallback for client-side routing
+
+  plugins: [
+    react()
+  ],
+
+  appType: 'spa',
+
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.APP_VERSION || pkgVersion),
-    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __APP_VERSION__: JSON.stringify(
+      process.env.APP_VERSION || pkgVersion
+    ),
+
+    __BUILD_TIME__: JSON.stringify(
+      new Date().toISOString()
+    ),
   },
+
+
   server: {
-    port: 2886,
+
+    // Domain
+    host: '0.0.0.0',
+
+    // HTTPS port
+    port: 80,
+
+    // SSL
+    https: ssl,
+
+    // Allow domain
+    allowedHosts: [
+      'whatsapp1.biztekapps.us',
+      'localhost',
+      '127.0.0.1',
+      '192.168.61.190'
+    ],
+
+
     proxy: {
+
+      // Backend API
       '/api': {
-        target: 'http://localhost:2785',
+
+        target: apiTarget,
+
         changeOrigin: true,
+
         secure: false,
+
       },
-      // Proxy the WebSocket (socket.io) transport so the dashboard's real-time
-      // chats/sessions streams work against the dev backend.
+
+
+      // Socket.io
       '/socket.io': {
-        target: 'http://localhost:2785',
+
+        target: apiTarget,
+
         ws: true,
+
         changeOrigin: true,
+
+        secure: false,
+
       },
+
     },
+
   },
+
 });

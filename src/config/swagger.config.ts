@@ -47,8 +47,8 @@ export function createSwaggerConfig(): Omit<OpenAPIObject, 'paths'> {
   const { version } = require('../../package.json') as { version: string };
   return (
     new DocumentBuilder()
-      .setTitle('OpenWA API')
-      .setDescription('Open Source WhatsApp API Gateway - Free, Self-Hosted HTTP API')
+      .setTitle('Biztek Whatsapp API')
+      .setDescription('Biztek Whatsapp API Gateway - Free, Self-Hosted HTTP API')
       .setVersion(version)
       .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, API_KEY_SECURITY_SCHEME)
       // Apply the scheme globally so Swagger UI sends the key with every request

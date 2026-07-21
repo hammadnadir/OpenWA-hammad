@@ -6,7 +6,7 @@
     }
   },
   "common": {
-    "appName": "OpenWA",
+    "appName": "Biztek Whatsapp",
     "appSubtitle": "WhatsApp API",
     "loading": "Loading...",
     "save": "Save",
@@ -150,7 +150,7 @@
     "connectionError": "Unable to connect to server. Please try again.",
     "help": "Need help?",
     "viewDocs": "View Documentation",
-    "footer": "Made with ❤️ by Yudhi Armyndharis and the OpenWA Community",
+    "footer": "",
     "version": "v{{version}} · {{date}}"
   },
   "dashboard": {
@@ -814,7 +814,9 @@
         "confirm": "Regenerate the signing secret for {{id}}? The current secret stops working immediately.",
         "action": "Regenerate"
       },
-      "edit": { "title": "Edit {{id}}" },
+      "edit": {
+        "title": "Edit {{id}}"
+      },
       "delete": {
         "title": "Delete instance",
         "confirm": "Delete instance {{id}}? Its ingress URL and secret stop working immediately.",

@@ -42,7 +42,7 @@ describe('StatsService time-series + hourly activity on SQLite (end-to-end regre
     });
     await ds.initialize();
     const cache = { setSessionsStats: jest.fn() };
-    service = new StatsService(ds.getRepository(Session), ds.getRepository(Message), cache as never);
+    service = new StatsService(ds.getRepository(Session), ds.getRepository(Message), ds, cache as never);
   });
 
   afterEach(async () => {
@@ -224,5 +224,29 @@ describe('StatsService time-series + hourly activity on SQLite (end-to-end regre
     );
     expect(totals.sent).toBe(2);
     expect(totals.received).toBe(1);
+  });
+
+  it('uses mongoManager for overview and session stats when dataDbType is mongodb', async () => {
+    await ds
+      .getRepository(Session)
+      .save(ds.getRepository(Session).create({ id: 's1', name: 'n', status: SessionStatus.READY, config: {} }));
+
+    Object.defineProperty(service, 'dataDbType', { get: () => 'mongodb', configurable: true });
+    const mockMongoManager = {
+      aggregate: jest.fn().mockReturnValue({
+        toArray: jest.fn().mockResolvedValue([]),
+      }),
+      count: jest.fn().mockResolvedValue(5),
+    };
+    Object.defineProperty(service, 'mongoManager', { get: () => mockMongoManager, configurable: true });
+
+    const overview = await service.getOverview();
+    expect(mockMongoManager.aggregate).toHaveBeenCalled();
+    expect(mockMongoManager.count).toHaveBeenCalledWith(Message, { status: MessageStatus.FAILED });
+    expect(overview.messages.failed).toBe(5);
+
+    const sessionStats = await service.getSessionStats('s1');
+    expect(mockMongoManager.count).toHaveBeenCalledWith(Message, { sessionId: 's1', status: MessageStatus.FAILED });
+    expect(sessionStats.messages.failed).toBe(5);
   });
 });

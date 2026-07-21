@@ -55,7 +55,7 @@ export class AuthService implements OnModuleInit {
   constructor(
     @InjectRepository(ApiKey, 'main')
     private readonly apiKeyRepository: Repository<ApiKey>,
-  ) {}
+  ) { }
 
   async onModuleInit(): Promise<void> {
     // Seed a default API key if none exist

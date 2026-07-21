@@ -6,7 +6,7 @@
     }
   },
   "common": {
-    "appName": "OpenWA",
+    "appName": "Biztek Bot",
     "appSubtitle": "API de WhatsApp",
     "loading": "Cargando...",
     "save": "Guardar",
@@ -809,7 +809,9 @@
         "confirm": "¿Regenerar el secreto de firma de {{id}}? El secreto actual dejará de funcionar de inmediato.",
         "action": "Regenerar"
       },
-      "edit": { "title": "Editar {{id}}" },
+      "edit": {
+        "title": "Editar {{id}}"
+      },
       "delete": {
         "title": "Eliminar instancia",
         "confirm": "¿Eliminar la instancia {{id}}? Su URL de entrada y secreto dejarán de funcionar de inmediato.",

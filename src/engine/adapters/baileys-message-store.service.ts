@@ -63,10 +63,21 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
     // string-compares '…:11' < '…:11.000' = TRUE, causing every same-second row to be over-evicted
     // and the store to be wiped to ~0.
     try {
-      await this.repo.upsert({ sessionId, waMessageId, serializedMessage, createdAt: new Date() }, [
-        'sessionId',
-        'waMessageId',
-      ]);
+      if (this.repo.metadata.connection.options.type === 'mongodb') {
+        const existing = await this.repo.findOne({ where: { sessionId, waMessageId } });
+        if (existing) {
+          existing.serializedMessage = serializedMessage;
+          existing.createdAt = new Date();
+          await this.repo.save(existing);
+        } else {
+          await this.repo.save({ sessionId, waMessageId, serializedMessage, createdAt: new Date() });
+        }
+      } else {
+        await this.repo.upsert({ sessionId, waMessageId, serializedMessage, createdAt: new Date() }, [
+          'sessionId',
+          'waMessageId',
+        ]);
+      }
     } catch (err) {
       if (isMissingParentSessionError(err)) {
         // Orphaned adapter: the sessions row was deleted/recreated (reconnect churn) while this

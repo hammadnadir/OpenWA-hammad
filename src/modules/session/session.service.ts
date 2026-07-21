@@ -819,6 +819,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
               timestamp: incoming.timestamp,
               status: MessageStatus.SENT,
               metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+              createdAt: incoming.timestamp ? new Date(incoming.timestamp * 1000) : new Date(),
             });
 
             // The hook chain above is async; a delete()/teardown can retire this engine while it

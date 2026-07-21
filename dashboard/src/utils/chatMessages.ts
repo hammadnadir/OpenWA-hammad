@@ -93,10 +93,29 @@ export function mergeOrAppend(
   if (idx === -1) return [...list, incoming];
   const existing = list[idx];
   const next = list.slice();
+
+  // Merge metadata to prevent losing media details (like base64/URL data) on WS echo updates
+  let mergedMetadata = incoming.metadata ?? existing.metadata;
+  if (existing.metadata && incoming.metadata) {
+    mergedMetadata = {
+      ...existing.metadata,
+      ...incoming.metadata,
+      media: incoming.metadata.media || existing.metadata.media ? {
+        mimetype: incoming.metadata.media?.mimetype || existing.metadata.media?.mimetype || '',
+        filename: incoming.metadata.media?.filename ?? existing.metadata.media?.filename,
+        sizeBytes: incoming.metadata.media?.sizeBytes ?? existing.metadata.media?.sizeBytes,
+        data: incoming.metadata.media?.data ?? existing.metadata.media?.data,
+        omitted: (incoming.metadata.media?.data ?? existing.metadata.media?.data)
+          ? false
+          : (incoming.metadata.media?.omitted ?? existing.metadata.media?.omitted),
+      } : undefined,
+    };
+  }
+
   next[idx] = {
     ...incoming,
     status: mergeDeliveryStatus(existing.status, incoming.status) ?? incoming.status,
-    metadata: incoming.metadata ?? existing.metadata,
+    metadata: mergedMetadata,
   };
   return next;
 }

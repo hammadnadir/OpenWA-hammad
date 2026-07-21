@@ -58,13 +58,13 @@ export function Login({ onLogin }: LoginProps) {
     <div className="login-container">
       <div className="login-card">
         <div className="login-logo">
-          <img src="/openwa_logo.webp" alt="OpenWA" className="logo-icon" />
-          <span className="version-info">
+          <img src="/bizteklogo.jpeg" alt="OpenWA" className="logo-icon" />
+          {/* <span className="version-info">
             {t('login.version', {
               version: __APP_VERSION__,
               date: new Date(__BUILD_TIME__).toLocaleDateString(),
             })}
-          </span>
+          </span> */}
         </div>
 
         <div className="login-language">
@@ -106,7 +106,7 @@ export function Login({ onLogin }: LoginProps) {
           </button>
         </form>
 
-        <p className="login-help">
+        {/* <p className="login-help">
           {t('login.help')}{' '}
           <a
             href="https://github.com/rmyndharis/OpenWA/blob/main/docs/01-project-overview.md"
@@ -115,10 +115,10 @@ export function Login({ onLogin }: LoginProps) {
           >
             {t('login.viewDocs')}
           </a>
-        </p>
+        </p> */}
       </div>
 
-      <footer className="login-footer">
+      {/* <footer className="login-footer">
         <span>{t('login.footer')}</span>
         <a
           href="https://github.com/rmyndharis/OpenWA"
@@ -129,7 +129,7 @@ export function Login({ onLogin }: LoginProps) {
         >
           <GithubIcon size={18} />
         </a>
-      </footer>
+      </footer> */}
     </div>
   );
 }

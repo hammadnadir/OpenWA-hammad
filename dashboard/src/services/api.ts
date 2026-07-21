@@ -336,7 +336,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       window.location.assign('/');
       // The page is navigating away — halt this request's promise chain so callers neither
       // throw the generic error below (flashing a toast) nor receive an undefined payload.
-      return new Promise<T>(() => {});
+      return new Promise<T>(() => { });
     }
   }
 
@@ -370,7 +370,7 @@ async function requestText(endpoint: string): Promise<string> {
     sessionStorage.removeItem('openwa_api_key');
     if (typeof window !== 'undefined') {
       window.location.assign('/');
-      return new Promise<string>(() => {});
+      return new Promise<string>(() => { });
     }
   }
 
@@ -428,8 +428,7 @@ export const sessionApi = {
   // video/voice render instead of collapsing to an empty timestamp-only bubble.
   getChatHistory: (id: string, chatId: string, limit = 100, includeMedia = false) =>
     request<EngineHistoryMessage[]>(
-      `/sessions/${id}/messages/${encodeURIComponent(chatId)}/history?limit=${limit}${
-        includeMedia ? '&includeMedia=true' : ''
+      `/sessions/${id}/messages/${encodeURIComponent(chatId)}/history?limit=${limit}${includeMedia ? '&includeMedia=true' : ''
       }`,
     ),
 };

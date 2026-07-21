@@ -364,7 +364,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           if (proxyLaunch.socksAuthUnsupported) {
             this.logger.warn(
               `Proxy for session ${this.config.sessionId} has credentials on a SOCKS proxy, but Chromium ` +
-                `cannot authenticate SOCKS proxies. Use an IP-authorized proxy or an HTTP/HTTPS proxy instead.`,
+              `cannot authenticate SOCKS proxies. Use an IP-authorized proxy or an HTTP/HTTPS proxy instead.`,
             );
           }
           this.logger.log(`Using proxy: ${proxyLaunch.serverArg}`);
@@ -643,9 +643,9 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       if (Date.now() - this.readyReconcileStartedAt >= READY_RECONCILE_TIMEOUT_MS) {
         this.logger.warn(
           'Timed out waiting for WhatsApp Web runtime readiness after authentication — the saved session ' +
-            'is stuck after the QR scan (usually the auto-selected WhatsApp Web build is incompatible). ' +
-            'Clearing it to re-pair; pin a known-good version via WWEBJS_WEB_VERSION (see ' +
-            'docs/12-troubleshooting-faq.md) if it keeps recurring.',
+          'is stuck after the QR scan (usually the auto-selected WhatsApp Web build is incompatible). ' +
+          'Clearing it to re-pair; pin a known-good version via WWEBJS_WEB_VERSION (see ' +
+          'docs/12-troubleshooting-faq.md) if it keeps recurring.',
         );
         this.clearReadyReconcile();
         // Self-heal: don't leave the session stuck at "authenticating" forever — clear the broken auth
@@ -904,7 +904,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           // (#583 R3). Fire-and-forget: resolution (and the send) must never block/fail on the write.
           void this.config.lidMappingStore
             ?.remember(userPart(wid), userPart(chatId), this.config.sessionId)
-            ?.catch(() => {});
+            ?.catch(() => { });
         }
         return wid;
       }

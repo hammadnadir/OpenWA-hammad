@@ -163,9 +163,9 @@ export function Layout({ onLogout, userRole }: LayoutProps) {
           <button className="mobile-menu-btn" onClick={toggleMobile} aria-label={t('common.expand')}>
             {isMobileOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
-          <div className="mobile-brand">
-            <img src="/openwa_logo.webp" alt="OpenWA" className="sidebar-logo" />
-            <span className="brand-name">{t('common.appName')}</span>
+          <div className="mobile-brand ">
+            <img className="w-10 h-10" src="/bizteklogo.jpeg" alt="OpenWA" className="sidebar-logo" />
+            <span className="brand-name">Biztek Bot</span>
           </div>
           <div style={{ width: 40 }} />
         </header>
@@ -177,11 +177,11 @@ export function Layout({ onLogout, userRole }: LayoutProps) {
         className={`sidebar ${isCollapsed ? 'collapsed' : ''} ${isMobile ? 'mobile' : ''} ${isMobileOpen ? 'open' : ''}`}
       >
         <div className="sidebar-header">
-          <img src="/openwa_logo.webp" alt="OpenWA" className="sidebar-logo" />
+          <img src="/fav-removebg-preview.png" alt="OpenWA" className="sidebar-logo" />
           {!isCollapsed && (
             <div className="sidebar-brand">
-              <span className="brand-name">{t('common.appName')}</span>
-              <span className="brand-version">v{version}</span>
+              <span className="brand-name">Biztek Bot</span>
+              {/* <span className="brand-version">v{version}</span> */}
             </div>
           )}
         </div>

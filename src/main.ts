@@ -4,6 +4,8 @@
 import './config/load-env';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, ShutdownSignal } from '@nestjs/common';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -73,8 +75,22 @@ async function bootstrap() {
     );
   }
 
+  let httpsOptions: any = undefined;
+  const keyPath = path.resolve(process.cwd(), 'key.pem');
+  const certPath = path.resolve(process.cwd(), 'cert.pem');
+  const isHttps = fs.existsSync(keyPath) && fs.existsSync(certPath);
+  if (isHttps) {
+    httpsOptions = {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+    };
+  }
+
   // Disable Nest's default body parser so we can set an explicit size cap below.
-  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  const app = await NestFactory.create(AppModule, {
+    bodyParser: false,
+    ...(httpsOptions ? { httpsOptions } : {}),
+  });
 
   // Cap request body size (DoS hardening). Media sends carry base64 in the JSON body,
   // so the default is generous; tune with BODY_SIZE_LIMIT.
@@ -238,9 +254,10 @@ async function bootstrap() {
   const port = process.env.PORT || 2785;
   await app.listen(port);
 
-  console.log(`🚀 OpenWA is running on: http://localhost:${port}`);
+  const protocol = isHttps ? 'https' : 'http';
+  console.log(`🚀 OpenWA is running on: ${protocol}://localhost:${port}`);
   if (swaggerEnabled) {
-    console.log(`📚 Swagger docs: http://localhost:${port}/api/docs`);
+    console.log(`📚 Swagger docs: ${protocol}://localhost:${port}/api/docs`);
   }
 
   // Make the dashboard-serving outcome explicit so a missing build (no UI on `/`)
@@ -248,7 +265,7 @@ async function bootstrap() {
   if (!dashboardServingEnabled) {
     console.log('🖥️  Dashboard: serving disabled (SERVE_DASHBOARD=false); API only');
   } else if (dashboardBuildPresent) {
-    console.log(`🖥️  Dashboard: serving bundled UI at http://localhost:${port}`);
+    console.log(`🖥️  Dashboard: serving bundled UI at ${protocol}://localhost:${port}`);
   } else {
     console.warn(
       `⚠️  Dashboard: no build at ${DASHBOARD_DIST} - UI disabled (API still serves /api). ` +

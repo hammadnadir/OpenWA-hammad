@@ -240,7 +240,7 @@ export function Chats() {
 
       // If the message belongs to the currently visible chat, mark-as-read and run the scroll heuristic.
       if (activeChat && newMsg.chatId === activeChat.id) {
-        markChatRead(activeChat.id);
+        // markChatRead(activeChat.id); // Disabled: dashboard read should not send receipt
         if (!newMsg.fromMe) onMessageAppended('incoming');
       }
 
@@ -439,7 +439,7 @@ export function Chats() {
   // the mark-as-read RPC for the same chat.
   useEffect(() => {
     if (!activeChat) return;
-    markChatRead(activeChat.id);
+    // markChatRead(activeChat.id); // Disabled: dashboard read should not send receipt
     setChats(prev => prev.map(c => (c.id === activeChat.id ? { ...c, unreadCount: 0 } : c)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChat?.id, markChatRead]);
@@ -571,19 +571,19 @@ export function Chats() {
       createdAt: new Date().toISOString(),
       metadata: attachment
         ? {
-            media: {
-              mimetype: attachment.mimetype,
-              filename: attachment.filename,
-              data: attachment.base64,
-            },
-          }
+          media: {
+            mimetype: attachment.mimetype,
+            filename: attachment.filename,
+            data: attachment.base64,
+          },
+        }
         : replyingTo
           ? {
-              quotedMessage: {
-                id: replyingTo.waMessageId || replyingTo.id,
-                body: replyingTo.type !== 'text' ? `[${replyingTo.type}]` : replyingTo.body,
-              },
-            }
+            quotedMessage: {
+              id: replyingTo.waMessageId || replyingTo.id,
+              body: replyingTo.type !== 'text' ? `[${replyingTo.type}]` : replyingTo.body,
+            },
+          }
           : undefined,
     };
 
@@ -631,6 +631,29 @@ export function Chats() {
           m => m.id === result.messageId || m.waMessageId === result.messageId,
         );
         if (echoAlreadyAdded) {
+          const tempMsg = prev.find(m => m.id === tempId);
+          if (tempMsg && tempMsg.metadata?.media) {
+            return prev
+              .map(m => {
+                if (m.id === result.messageId || m.waMessageId === result.messageId) {
+                  return {
+                    ...m,
+                    metadata: {
+                      ...(m.metadata ?? {}),
+                      media: {
+                        mimetype: tempMsg.metadata!.media!.mimetype,
+                        filename: tempMsg.metadata!.media!.filename,
+                        sizeBytes: tempMsg.metadata!.media!.sizeBytes,
+                        data: tempMsg.metadata!.media!.data,
+                        omitted: false,
+                      },
+                    },
+                  };
+                }
+                return m;
+              })
+              .filter(m => m.id !== tempId);
+          }
           return prev.filter(m => m.id !== tempId);
         }
         return prev.map(m =>
@@ -907,7 +930,7 @@ export function Chats() {
                           );
                         }
                         if (!mediaInfo) return null;
-                        if (mediaInfo.omitted) {
+                        if (mediaInfo.omitted && !mediaInfo.data) {
                           return <div className="message-media-omitted">📎 {t('chats.media.omitted')}</div>;
                         }
                         const mediaSrc = getMediaSrc(mediaInfo);
@@ -970,9 +993,8 @@ export function Chats() {
                         >
                           <div className="message-bubble-container">
                             <div
-                              className={`message-bubble ${isMe ? 'outgoing' : 'incoming'} ${msg.status} ${
-                                isMediaMessage ? 'media-type' : ''
-                              } ${isRevoked ? 'revoked-type' : ''}`}
+                              className={`message-bubble ${isMe ? 'outgoing' : 'incoming'} ${msg.status} ${isMediaMessage ? 'media-type' : ''
+                                } ${isRevoked ? 'revoked-type' : ''}`}
                             >
                               {/* Group message author */}
                               {activeChat?.isGroup && !isMe && msg.author && (

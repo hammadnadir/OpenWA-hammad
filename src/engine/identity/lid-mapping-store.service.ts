@@ -65,7 +65,19 @@ export class LidMappingStoreService implements LidMappingStore, OnModuleInit {
     }
     this.index(lid, phone);
     try {
-      await this.repo.upsert({ lid, phone, sessionId: sessionId ?? null, updatedAt: new Date() }, ['lid']);
+      if (this.repo.metadata.connection.options.type === 'mongodb') {
+        const existing = await this.repo.findOne({ where: { lid } });
+        if (existing) {
+          existing.phone = phone;
+          existing.sessionId = sessionId ?? null;
+          existing.updatedAt = new Date();
+          await this.repo.save(existing);
+        } else {
+          await this.repo.save({ lid, phone, sessionId: sessionId ?? null, updatedAt: new Date() });
+        }
+      } else {
+        await this.repo.upsert({ lid, phone, sessionId: sessionId ?? null, updatedAt: new Date() }, ['lid']);
+      }
     } catch (err) {
       this.logger.warn(
         `Failed to persist lid->phone mapping for ${lid}: ${err instanceof Error ? err.message : String(err)}`,

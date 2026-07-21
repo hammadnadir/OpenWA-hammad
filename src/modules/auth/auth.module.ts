@@ -25,4 +25,4 @@ import { ProxyAwareThrottlerGuard } from '../../common/security/proxy-aware-thro
   ],
   exports: [AuthService],
 })
-export class AuthModule {}
+export class AuthModule { }
